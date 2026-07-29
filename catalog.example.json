@@ -1,0 +1,15 @@
+{
+  "games": [
+    {
+      "id": "demo-game",
+      "title": "Demo Game",
+      "version": "1.0.0",
+      "description": "Authorized demo content",
+      "archive_size": 123456,
+      "source": {
+        "type": "gofile",
+        "content_id": "REPLACE_WITH_OWN_CONTENT_ID"
+      }
+    }
+  ]
+}

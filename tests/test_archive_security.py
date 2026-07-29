@@ -1,0 +1,105 @@
+import io
+import stat
+import tarfile
+import zipfile
+
+import pytest
+
+from game_downloader.archive.extractor import (
+    ArchiveError,
+    ArchiveExtractor,
+    detect_archive_kind,
+)
+from game_downloader.models import ExtractionLimits
+
+
+def write_zip(path, entries):
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in entries:
+            archive.writestr(name, data)
+
+
+def test_extracts_safe_zip_via_temporary_directory(tmp_path):
+    archive = tmp_path / "safe.zip"
+    write_zip(archive, [("folder/readme.txt", b"authorized demo")])
+    destination = tmp_path / "output"
+    result = ArchiveExtractor().extract(archive, destination)
+    assert (destination / "folder/readme.txt").read_bytes() == b"authorized demo"
+    assert result.file_count == 1
+
+
+def test_detects_imported_browser_download_by_signature(tmp_path):
+    archive = tmp_path / "browser-download-without-extension"
+    write_zip(archive, [("readme.txt", b"authorized")])
+    assert detect_archive_kind(archive) == "zip"
+
+
+@pytest.mark.parametrize("name", ["../escape.txt", "/absolute.txt", "C:\\escape.txt"])
+def test_rejects_zip_slip_and_absolute_paths(tmp_path, name):
+    archive = tmp_path / "attack.zip"
+    write_zip(archive, [(name, b"bad")])
+    with pytest.raises(ArchiveError, match="path"):
+        ArchiveExtractor().extract(archive, tmp_path / "output")
+    assert not (tmp_path / "output").exists()
+
+
+def test_rejects_zip_symlink(tmp_path):
+    archive = tmp_path / "link.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        output.writestr(info, "../outside")
+    with pytest.raises(ArchiveError, match="symbolic link"):
+        ArchiveExtractor().list_contents(archive)
+
+
+def test_rejects_tar_symlink(tmp_path):
+    archive = tmp_path / "link.tar"
+    with tarfile.open(archive, "w") as output:
+        info = tarfile.TarInfo("link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../outside"
+        output.addfile(info)
+    with pytest.raises(ArchiveError, match="link"):
+        ArchiveExtractor().list_contents(archive)
+
+
+def test_rejects_excessive_file_count(tmp_path):
+    archive = tmp_path / "many.zip"
+    write_zip(archive, [(f"{index}.txt", b"x") for index in range(3)])
+    extractor = ArchiveExtractor(ExtractionLimits(max_files=2))
+    with pytest.raises(ArchiveError, match="too many"):
+        extractor.list_contents(archive)
+
+
+def test_rejects_archive_bomb_ratio(tmp_path):
+    archive = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr("zeros.bin", b"\0" * 100_000)
+    extractor = ArchiveExtractor(ExtractionLimits(max_compression_ratio=5))
+    with pytest.raises(ArchiveError, match="compression ratio"):
+        extractor.list_contents(archive)
+
+
+def test_rejects_existing_nonempty_destination_even_with_overwrite(tmp_path):
+    archive = tmp_path / "safe.zip"
+    write_zip(archive, [("file.txt", b"new")])
+    destination = tmp_path / "output"
+    destination.mkdir()
+    (destination / "owned.txt").write_text("keep")
+    with pytest.raises(ArchiveError, match="choose a new or empty"):
+        ArchiveExtractor().extract(archive, destination, overwrite=True)
+    assert (destination / "owned.txt").read_text() == "keep"
+
+
+def test_rejects_tar_size_limit_before_extracting(tmp_path):
+    archive = tmp_path / "large.tar"
+    with tarfile.open(archive, "w") as output:
+        info = tarfile.TarInfo("large.bin")
+        payload = b"a" * 20
+        info.size = len(payload)
+        output.addfile(info, io.BytesIO(payload))
+    extractor = ArchiveExtractor(ExtractionLimits(max_total_size=10))
+    with pytest.raises(ArchiveError, match="size limit"):
+        extractor.extract(archive, tmp_path / "output")

@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+
+from PySide6.QtCore import QThread, Signal
+
+from game_downloader.download.manager import DownloadManager
+from game_downloader.models import DownloadProgress, ResolvedDownload
+from game_downloader.storage.gofile_browser_download import GoFileBrowserDownload
+
+
+class CoroutineWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, operation: Callable[[], Awaitable[object]]) -> None:
+        super().__init__()
+        self.operation = operation
+
+    def run(self) -> None:
+        try:
+            result = asyncio.run(self.operation())
+        except Exception as exc:  # The UI boundary intentionally converts errors to short text.
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+
+
+class GoFileBrowserWorker(QThread):
+    notice = Signal(str)
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        browser_download: GoFileBrowserDownload,
+        content_id: str,
+        destination: Path,
+    ) -> None:
+        super().__init__()
+        self.browser_download = browser_download
+        self.content_id = content_id
+        self.destination = destination
+
+    def run(self) -> None:
+        try:
+            result = asyncio.run(
+                self.browser_download.download(
+                    self.content_id,
+                    self.destination,
+                    notice=self.notice.emit,
+                )
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+
+
+class DownloadWorker(QThread):
+    progress = Signal(object)
+    notice = Signal(str)
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, resolved: ResolvedDownload, destination: Path) -> None:
+        super().__init__()
+        self.resolved = resolved
+        self.destination = destination
+        self.manager = DownloadManager()
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def run(self) -> None:
+        async def execute() -> Path:
+            self.loop = asyncio.get_running_loop()
+
+            def progress_callback(value: DownloadProgress) -> None:
+                self.progress.emit(value)
+
+            return await self.manager.download(
+                self.resolved,
+                self.destination,
+                progress=progress_callback,
+                notice=self.notice.emit,
+            )
+
+        try:
+            result = asyncio.run(execute())
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.loop = None
+
+    def pause_download(self) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.manager.pause)
+
+    def resume_download(self) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.manager.resume)
+
+    def cancel_download(self) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.manager.cancel)
