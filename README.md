@@ -27,7 +27,7 @@ uv sync --extra dev
 uv run authorized-game-downloader
 ```
 
-Open **Settings** before the first remote download. Choose either a local JSON
+Open **Ayarlar** before the first remote download. Choose either a local JSON
 catalog or an HTTPS catalog URL, set the exact allowed catalog domains, choose
 a download folder, and save the settings.
 
@@ -37,10 +37,10 @@ The app uses GoFile's public download-page flow and does not call the GoFile
 API. This is intentional: GoFile documents public download pages for free
 users, while direct links and full API access are Premium features.
 
-After selecting an authorized result, click **Download & extract**. This single
-explicit action authorizes both operations, so the app does not interrupt the
-flow with a second extraction-confirmation dialog. When **visible
-GoFile browser downloads (no API)** is enabled in Settings, the app opens a
+Double-click a result or select it and press **İndir**. The app immediately
+follows the result, finds the GoFile link, downloads it, and extracts it; there
+is no second download or extraction button in the normal flow. When GoFile
+browser downloads are enabled in **Ayarlar**, the app opens a
 dedicated visible Chromium profile at exactly
 `https://gofile.io/d/<contentId>`. It waits for exactly one visible control
 whose accessible name is **Download**, clicks it, captures Playwright's browser
@@ -48,7 +48,7 @@ download event, saves into `<filename>.part`, and publishes the final filename
 only after Chromium reports successful completion. It then safely extracts the
 archive into a new, non-overwriting folder. The Chromium window closes
 automatically after the file is saved, and extraction completion is reported
-inside the main window with an optional **Open folder** button.
+inside the main window with an optional **Klasörü aç** button.
 
 The browser is deliberately headed rather than hidden. If GoFile presents
 CAPTCHA or human verification, complete it yourself in that visible window.
@@ -123,6 +123,12 @@ is fetched. That page must contain a visible approved anchor:
 <a href="https://gofile.io/d/YOUR_CONTENT_ID">DOWNLOAD HERE</a>
 ```
 
+Protocol-relative GoFile links are also accepted:
+
+```html
+<a href="//gofile.io/d/YOUR_CONTENT_ID">DOWNLOAD HERE</a>
+```
+
 Catalog pages are parsed as inert HTML. Scripts are never executed, external
 catalog links are not followed, HTTPS and the exact domain allowlist are
 enforced, and unexpected redirects stop the operation.
@@ -137,6 +143,15 @@ browser `Download`, so this path uses an indeterminate progress indicator and
 shows each capture, save, validation, and extraction stage in the Activity
 area. Existing downloads and extraction folders are preserved; a numbered
 destination is selected automatically instead of asking to overwrite.
+
+## Appearance
+
+The interface is Turkish and intentionally keeps text and confirmation dialogs
+to a minimum. On first launch the app creates an editable `theme.json` beside
+`settings.json` and `application.log` in the application state folder. Press
+**Tema** to open it. Every color is a six-digit hex value; save changes and
+restart the app to apply them. Invalid values are ignored and replaced with
+safe defaults.
 
 ZIP and TAR formats use the Python standard library. RAR prefers an already
 installed official `unrar` executable and falls back to 7-Zip. The 7z format

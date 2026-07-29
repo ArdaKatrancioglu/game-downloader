@@ -1,45 +1,88 @@
-APP_STYLESHEET = """
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+DEFAULT_THEME = {
+    "background": "#0b1020",
+    "surface": "#121a2e",
+    "surface_alt": "#0d1425",
+    "border": "#24304a",
+    "border_focus": "#6d8cff",
+    "text": "#e8edf7",
+    "muted": "#8f9bb3",
+    "accent": "#5577ee",
+    "accent_hover": "#6685f3",
+    "accent_surface": "#263b70",
+    "disabled": "#71809b",
+}
+
+
+def load_theme(path: Path) -> str:
+    """Load editable colors from JSON, creating the file on first launch."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(
+            json.dumps(DEFAULT_THEME, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    colors = dict(DEFAULT_THEME)
+    try:
+        configured = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(configured, dict):
+            raise ValueError("theme root must be an object")
+        for key, value in configured.items():
+            if key in colors and isinstance(value, str) and _COLOR.fullmatch(value):
+                colors[key] = value
+            elif key in colors:
+                logger.warning("Ignoring invalid theme color key=%s value=%r", key, value)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Theme file could not be loaded path=%s error=%s", path, exc)
+
+    stylesheet = _STYLESHEET
+    for key, value in colors.items():
+        stylesheet = stylesheet.replace(f"@{key}@", value)
+    return stylesheet
+
+
+_STYLESHEET = """
 QMainWindow, QWidget#appRoot {
-    background: #0b1020;
-    color: #e8edf7;
+    background: @background@;
+    color: @text@;
     font-family: "Inter", "Segoe UI", "SF Pro Text", sans-serif;
     font-size: 14px;
 }
 QLabel {
-    color: #dce4f3;
+    color: @text@;
 }
 QFrame#headerCard {
     background: transparent;
 }
-QLabel#eyebrow {
-    color: #7c9cff;
-    font-size: 12px;
-    font-weight: 700;
-}
 QLabel#pageTitle {
-    color: #f7f9ff;
+    color: @text@;
     font-size: 28px;
     font-weight: 700;
 }
-QLabel#subtitle, QLabel#mutedLabel {
-    color: #8f9bb3;
+QLabel#mutedLabel {
+    color: @muted@;
 }
 QLabel#sectionTitle {
-    color: #f1f4fb;
+    color: @text@;
     font-size: 16px;
     font-weight: 650;
 }
 QLabel#statusText {
-    color: #d6deef;
-}
-QLabel#stepText {
-    color: #7c9cff;
-    font-size: 12px;
-    font-weight: 600;
+    color: @text@;
 }
 QFrame.card, QGroupBox {
-    background: #121a2e;
-    border: 1px solid #24304a;
+    background: @surface@;
+    border: 1px solid @border@;
     border-radius: 14px;
 }
 QGroupBox {
@@ -52,24 +95,24 @@ QGroupBox::title {
     subcontrol-origin: margin;
     left: 14px;
     padding: 0 6px;
-    color: #eef2fb;
+    color: @text@;
 }
 QLineEdit {
     min-height: 42px;
     padding: 0 13px;
-    color: #f4f7ff;
-    background: #0d1425;
-    border: 1px solid #2a3855;
+    color: @text@;
+    background: @surface_alt@;
+    border: 1px solid @border@;
     border-radius: 10px;
-    selection-background-color: #5577ee;
+    selection-background-color: @accent@;
 }
 QLineEdit:focus {
-    border-color: #6d8cff;
+    border-color: @border_focus@;
 }
 QListWidget {
-    color: #e7ecf7;
-    background: #0d1425;
-    border: 1px solid #263552;
+    color: @text@;
+    background: @surface_alt@;
+    border: 1px solid @border@;
     border-radius: 10px;
     padding: 6px;
     outline: none;
@@ -81,46 +124,46 @@ QListWidget::item {
     border-radius: 8px;
 }
 QListWidget::item:hover {
-    background: #18243e;
+    background: @surface@;
 }
 QListWidget::item:selected {
-    background: #263b70;
-    color: #ffffff;
+    background: @accent_surface@;
+    color: @text@;
 }
 QPushButton {
     min-height: 38px;
     padding: 0 16px;
-    color: #e9efff;
-    background: #202c45;
-    border: 1px solid #31415f;
+    color: @text@;
+    background: @surface@;
+    border: 1px solid @border@;
     border-radius: 9px;
     font-weight: 600;
 }
 QPushButton:hover {
-    background: #293957;
-    border-color: #48608b;
+    background: @accent_surface@;
+    border-color: @border_focus@;
 }
 QPushButton:pressed {
-    background: #18243a;
+    background: @surface_alt@;
 }
 QPushButton:disabled {
-    color: #65718a;
-    background: #151d2e;
-    border-color: #202a3e;
+    color: @disabled@;
+    background: @surface_alt@;
+    border-color: @border@;
 }
 QPushButton#primaryButton {
     min-height: 44px;
-    color: #ffffff;
-    background: #5577ee;
-    border-color: #6e8cff;
+    color: @text@;
+    background: @accent@;
+    border-color: @border_focus@;
 }
 QPushButton#primaryButton:hover {
-    background: #6685f3;
+    background: @accent_hover@;
 }
 QPushButton#primaryButton:disabled {
-    color: #71809b;
-    background: #19233a;
-    border-color: #26334d;
+    color: @disabled@;
+    background: @surface@;
+    border-color: @border@;
 }
 QPushButton#quietButton {
     background: transparent;
@@ -129,27 +172,27 @@ QProgressBar {
     min-height: 10px;
     max-height: 10px;
     color: transparent;
-    background: #0c1323;
+    background: @surface_alt@;
     border: 0;
     border-radius: 5px;
 }
 QProgressBar::chunk {
-    background: #5f80f4;
+    background: @accent@;
     border-radius: 5px;
 }
 QDialog {
-    background: #10172a;
-    color: #eef2fa;
+    background: @background@;
+    color: @text@;
 }
 QFormLayout QLabel, QCheckBox {
-    color: #dce4f3;
+    color: @text@;
 }
 QSpinBox {
     min-height: 36px;
     padding: 0 8px;
-    color: #f4f7ff;
-    background: #0d1425;
-    border: 1px solid #2a3855;
+    color: @text@;
+    background: @surface_alt@;
+    border: 1px solid @border@;
     border-radius: 8px;
 }
 """

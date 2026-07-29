@@ -230,7 +230,13 @@ class OwnedHtmlCatalogProvider:
             href = str(link["href"])
             if href.startswith("//"):
                 href = "https:" + href
-            return extract_gofile_content_id(href)
+            try:
+                return extract_gofile_content_id(href)
+            except SecurityError:
+                logger.info(
+                    "Skipping visible DOWNLOAD HERE link because it is not a GoFile share."
+                )
+                continue
         raise ValueError("No visible DOWNLOAD HERE GoFile link was found.")
 
 

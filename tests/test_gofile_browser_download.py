@@ -15,7 +15,7 @@ from game_downloader.storage.gofile_browser_download import (
 
 @pytest.mark.asyncio
 async def test_browser_download_is_disabled_by_default(tmp_path: Path):
-    with pytest.raises(GoFileBrowserDownloadError, match="disabled"):
+    with pytest.raises(GoFileBrowserDownloadError, match="kapalı"):
         await GoFileBrowserDownload().download("owned123", tmp_path)
 
 
@@ -25,9 +25,9 @@ def test_navigation_and_download_hosts_are_restricted_to_gofile():
     assert _is_gofile_host("gofile.io")
     assert _is_gofile_host("store1.gofile.io")
     assert not _is_gofile_host("gofile.io.evil.example")
-    with pytest.raises(GoFileBrowserDownloadError, match="unexpected GoFile page"):
+    with pytest.raises(GoFileBrowserDownloadError, match="Beklenmeyen GoFile"):
         _validate_share_page("https://evil.example/d/owned123", "owned123")
-    with pytest.raises(GoFileBrowserDownloadError, match="unexpected URL"):
+    with pytest.raises(GoFileBrowserDownloadError, match="beklenmeyen bir adresten"):
         _validate_download_url("https://evil.example/file.zip")
 
 
@@ -112,7 +112,7 @@ async def test_multiple_download_controls_stop_automatic_selection():
         def get_by_role(self, role, name):
             return FakeMatches(0)
 
-    with pytest.raises(GoFileBrowserDownloadError, match="multiple"):
+    with pytest.raises(GoFileBrowserDownloadError, match="birden fazla"):
         await _wait_for_single_download_control(
             FakePage(),
             "owned123",

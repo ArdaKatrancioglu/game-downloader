@@ -47,7 +47,7 @@ class GoFileBrowserDownload:
     ) -> Path:
         if not self.enabled:
             raise GoFileBrowserDownloadError(
-                "Visible GoFile browser downloads are disabled in Settings."
+                "GoFile tarayıcı indirmeleri Ayarlar bölümünde kapalı."
             )
         content_id = extract_gofile_content_id(content_id)
         destination.mkdir(parents=True, exist_ok=True)
@@ -56,15 +56,15 @@ class GoFileBrowserDownload:
             from playwright.async_api import async_playwright
         except ImportError as exc:
             raise GoFileBrowserDownloadError(
-                "GoFile browser downloads require the browser extra. Run "
-                "`uv sync --extra browser` and `uv run playwright install chromium`."
+                "Tarayıcı bileşeni eksik. `uv sync --extra browser` ve "
+                "`uv run playwright install chromium` komutlarını çalıştır."
             ) from exc
 
         temporary_profile: tempfile.TemporaryDirectory[str] | None = None
         if self.remember_session:
             if self.profile_dir is None:
                 raise GoFileBrowserDownloadError(
-                    "The dedicated GoFile browser profile folder is unavailable."
+                    "GoFile tarayıcı profil klasörü kullanılamıyor."
                 )
             profile = self.profile_dir
             profile.mkdir(parents=True, exist_ok=True)
@@ -82,7 +82,7 @@ class GoFileBrowserDownload:
             self.remember_session,
             profile if self.remember_session else "<temporary>",
         )
-        _notify(notice, "Opening the visible GoFile Chromium window…")
+        _notify(notice, "GoFile açılıyor…")
         try:
             async with async_playwright() as playwright:
                 try:
@@ -93,7 +93,7 @@ class GoFileBrowserDownload:
                     )
                 except Exception as exc:
                     raise GoFileBrowserDownloadError(
-                        "Chromium could not be opened. Install it with "
+                        "Chromium açılamadı. Şu komutla kur: "
                         "`uv run playwright install chromium`."
                     ) from exc
                 try:
@@ -132,10 +132,10 @@ class GoFileBrowserDownload:
                         )
                     except Exception as exc:
                         raise GoFileBrowserDownloadError(
-                            "The visible browser could not open the GoFile share."
+                            "GoFile sayfası açılamadı."
                         ) from exc
                     _validate_share_page(page.url, content_id)
-                    _notify(notice, "GoFile page opened; locating the file Download button…")
+                    _notify(notice, "İndirme düğmesi bulunuyor…")
                     logger.info(
                         "Visible GoFile page opened url=%s title=%r",
                         safe_url(page.url),
@@ -150,7 +150,7 @@ class GoFileBrowserDownload:
                         "Exactly one visible GoFile button.item_download found; "
                         "clicking it in the visible browser."
                     )
-                    _notify(notice, "GoFile Download button found; clicking it now…")
+                    _notify(notice, "İndirme başlatılıyor…")
                     try:
                         async with page.expect_download(
                             timeout=self.timeout_seconds * 1000
@@ -158,25 +158,23 @@ class GoFileBrowserDownload:
                             await control.click()
                             _notify(
                                 notice,
-                                "Download button clicked; waiting for Chromium's "
-                                "download event…",
+                                "İndirme bekleniyor…",
                             )
                         download = await download_info.value
                     except PlaywrightTimeoutError as exc:
                         raise GoFileBrowserDownloadError(
-                            "The visible GoFile Download control did not start a "
-                            "browser download within five minutes."
+                            "GoFile indirmeyi beş dakika içinde başlatmadı."
                         ) from exc
                     _validate_download_url(download.url)
                     filename = safe_filename(download.suggested_filename)
                     _notify(
                         notice,
-                        f"Chromium download started: {filename}. Saving to .part…",
+                        f"İndiriliyor: {filename}",
                     )
                     final_path = _available_download_path(destination, filename)
                     if final_path.parent != destination.resolve():
                         raise GoFileBrowserDownloadError(
-                            "GoFile suggested an unsafe filename."
+                            "GoFile geçersiz bir dosya adı döndürdü."
                         )
                     partial_path = final_path.with_name(final_path.name + ".part")
                     logger.info(
@@ -190,10 +188,10 @@ class GoFileBrowserDownload:
                     failure = await download.failure()
                     if failure:
                         raise GoFileBrowserDownloadError(
-                            "The GoFile browser download failed before completion."
+                            "GoFile indirmesi tamamlanamadı."
                         )
                     partial_path.replace(final_path)
-                    _notify(notice, f"GoFile download completed: {filename}")
+                    _notify(notice, f"İndirme tamamlandı: {filename}")
                     logger.info(
                         "GoFile browser download completed path=%s source=%s",
                         final_path,
@@ -231,7 +229,7 @@ async def _wait_for_single_download_control(
     while loop.time() < deadline:
         if page.is_closed():
             raise GoFileBrowserDownloadError(
-                "The GoFile browser window was closed before download started."
+                "İndirme başlamadan tarayıcı kapatıldı."
             )
         _validate_share_page(page.url, content_id)
         item_download_matches = page.locator("button.item_download")
@@ -246,8 +244,7 @@ async def _wait_for_single_download_control(
             return controls[0]
         if len(controls) > 1:
             raise GoFileBrowserDownloadError(
-                "The GoFile share contains multiple visible Download controls. "
-                "Automatic selection is disabled to avoid downloading the wrong file."
+                "GoFile sayfasında birden fazla indirme düğmesi bulundu."
             )
         if loop.time() >= next_diagnostic:
             challenge = await _challenge_visible(page)
@@ -265,9 +262,8 @@ async def _wait_for_single_download_control(
             next_diagnostic = loop.time() + 5.0
         await asyncio.sleep(0.5)
     raise GoFileBrowserDownloadError(
-        "GoFile did not show exactly one Download control within five minutes. "
-        "If verification is visible, complete it in the browser and keep the "
-        "window open."
+        "GoFile beş dakika içinde kullanılabilir bir indirme düğmesi göstermedi. "
+        "Doğrulama görünüyorsa tarayıcıda tamamla."
     )
 
 
@@ -308,7 +304,7 @@ def _validate_share_page(url: str, content_id: str) -> None:
         or parsed.password
     ):
         raise GoFileBrowserDownloadError(
-            f"The browser reached an unexpected GoFile page: {safe_url(url)}"
+            f"Beklenmeyen GoFile sayfası açıldı: {safe_url(url)}"
         )
 
 
@@ -323,7 +319,7 @@ def _validate_download_url(url: str) -> None:
         or parsed.path == "/"
     ):
         raise GoFileBrowserDownloadError(
-            f"GoFile started a download from an unexpected URL: {safe_url(url)}"
+            f"İndirme beklenmeyen bir adresten başladı: {safe_url(url)}"
         )
 
 

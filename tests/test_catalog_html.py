@@ -65,6 +65,20 @@ async def test_owned_catalog_rejects_non_gofile_download_link():
             await provider.get_release(results[0].id)
 
 
+def test_download_parser_skips_other_hosts_and_accepts_protocol_relative_gofile():
+    html = """
+    <a href="https://example.invalid/not-gofile">DOWNLOAD HERE</a>
+    <a href="//gofile.io/d/ud2omH"
+       target="_blank"
+       rel="nofollow"
+       class="shortc-button medium purple ">
+      DOWNLOAD HERE
+    </a>
+    """
+
+    assert OwnedHtmlCatalogProvider._find_download_content_id(html) == "ud2omH"
+
+
 @pytest.mark.asyncio
 async def test_owned_catalog_skips_external_results():
     html = (
