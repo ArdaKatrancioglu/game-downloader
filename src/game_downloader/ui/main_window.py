@@ -28,7 +28,13 @@ from game_downloader.archive.extractor import ArchiveExtractor
 from game_downloader.catalog.json_provider import LocalJsonCatalogProvider
 from game_downloader.catalog.owned_html_provider import OwnedHtmlCatalogProvider
 from game_downloader.download.manager import DownloadManager
-from game_downloader.models import DownloadProgress, GameEntry, GameRelease, ResolvedDownload
+from game_downloader.models import (
+    DownloadProgress,
+    ExtractionLimits,
+    GameEntry,
+    GameRelease,
+    ResolvedDownload,
+)
 from game_downloader.settings import AppSettings, SettingsRepository
 from game_downloader.storage.gofile_browser_download import GoFileBrowserDownload
 from game_downloader.ui.settings_dialog import SettingsDialog
@@ -337,13 +343,26 @@ class MainWindow(QMainWindow):
         destination = self.downloaded_path.parent / (
             self.downloaded_path.name.split(".", 1)[0] + "-extracted"
         )
-        extractor = ArchiveExtractor()
+        extractor = ArchiveExtractor(
+            ExtractionLimits(
+                max_total_size=self.settings.max_extracted_archive_size,
+                max_files=self.settings.max_extracted_file_count,
+            )
+        )
         worker = CoroutineWorker(
             lambda: asyncio.to_thread(extractor.extract, self.downloaded_path, destination)
         )
         worker.succeeded.connect(self._extraction_finished)
-        worker.failed.connect(self._show_error)
+        worker.failed.connect(self._extraction_failed)
+        self.extract_button.setEnabled(False)
+        self.status.setText(
+            "Inspecting the archive and extracting it with the available tool…"
+        )
         self._start_worker(worker)
+
+    def _extraction_failed(self, message: str) -> None:
+        self.extract_button.setEnabled(True)
+        self._show_error(message)
 
     def _extraction_finished(self, value: object) -> None:
         self.extract_button.setEnabled(False)

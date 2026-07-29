@@ -131,8 +131,9 @@ memory. Playwright owns the network transfer; the app saves to
 1.5× free-space headroom. Playwright does not expose byte-level progress for a
 browser `Download`, so this path uses an indeterminate progress indicator.
 
-ZIP and TAR formats use the Python standard library. RAR and 7z require an
-already installed `7zz` or `7z` executable from the [official 7-Zip
+ZIP and TAR formats use the Python standard library. RAR prefers an already
+installed official `unrar` executable and falls back to 7-Zip. The 7z format
+requires an installed `7zz` or `7z` executable from the [official 7-Zip
 site](https://www.7-zip.org/); the app never downloads or installs it.
 
 Before extraction, entries are listed and checked for absolute/drive paths,

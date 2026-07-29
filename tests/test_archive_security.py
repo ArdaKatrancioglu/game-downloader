@@ -1,5 +1,6 @@
 import io
 import stat
+import subprocess
 import tarfile
 import zipfile
 
@@ -103,3 +104,57 @@ def test_rejects_tar_size_limit_before_extracting(tmp_path):
     extractor = ArchiveExtractor(ExtractionLimits(max_total_size=10))
     with pytest.raises(ArchiveError, match="size limit"):
         extractor.extract(archive, tmp_path / "output")
+
+
+def test_rar_extraction_prefers_unrar(monkeypatch, tmp_path):
+    archive = tmp_path / "owned.rar"
+    archive.write_bytes(b"Rar!\x1a\x07\x01\x00")
+    target = tmp_path / "output"
+    target.mkdir()
+    commands = []
+
+    monkeypatch.setattr(
+        "game_downloader.archive.extractor.shutil.which",
+        lambda name: f"/tools/{name}",
+    )
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("game_downloader.archive.extractor.subprocess.run", run)
+    ArchiveExtractor()._extract_rar(archive, target)
+
+    assert commands[0][0][0] == "/tools/unrar"
+    assert commands[0][0][1:6] == ["x", "-y", "-o-", "-ol-", "-c-"]
+    assert len(commands) == 1
+
+
+def test_rar_extraction_falls_back_to_7zip_and_reports_both_failures(
+    monkeypatch,
+    tmp_path,
+):
+    archive = tmp_path / "owned.rar"
+    archive.write_bytes(b"Rar!\x1a\x07\x01\x00")
+    target = tmp_path / "output"
+    target.mkdir()
+
+    monkeypatch.setattr(
+        "game_downloader.archive.extractor.shutil.which",
+        lambda name: f"/tools/{name}",
+    )
+
+    def run(command, **kwargs):
+        if command[0].endswith("unrar"):
+            return subprocess.CompletedProcess(command, 3, "", "CRC failed")
+        return subprocess.CompletedProcess(command, 2, "", "Data error")
+
+    monkeypatch.setattr("game_downloader.archive.extractor.subprocess.run", run)
+
+    with pytest.raises(ArchiveError) as error:
+        ArchiveExtractor()._extract_rar(archive, target)
+
+    message = str(error.value)
+    assert "unrar exit 3: CRC failed" in message
+    assert "7-Zip fallback" in message
+    assert "Data error" in message

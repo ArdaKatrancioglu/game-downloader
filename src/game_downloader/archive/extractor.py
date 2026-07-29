@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from game_downloader.models import ExtractionLimits, ExtractionResult
+
+logger = logging.getLogger(__name__)
 
 
 class ArchiveError(RuntimeError):
@@ -32,6 +35,12 @@ class ArchiveExtractor:
 
     def list_contents(self, archive: Path) -> list[ArchiveMember]:
         kind = _archive_kind(archive)
+        logger.info(
+            "Inspecting archive path=%s kind=%s archive_size=%d",
+            archive,
+            kind,
+            archive.stat().st_size,
+        )
         if kind == "zip":
             with zipfile.ZipFile(archive) as source:
                 members = []
@@ -97,13 +106,28 @@ class ArchiveExtractor:
                 self._extract_zip(archive, temporary)
             elif kind == "tar":
                 self._extract_tar(archive, temporary)
+            elif kind == "rar":
+                self._extract_rar(archive, temporary)
+                self._validate_extracted_tree(temporary)
             else:
                 self._extract_7zip(archive, temporary)
                 self._validate_extracted_tree(temporary)
             os.replace(temporary, destination)
         except Exception:
+            logger.exception(
+                "Archive extraction failed archive=%s destination=%s temporary=%s",
+                archive,
+                destination,
+                temporary,
+            )
             shutil.rmtree(temporary, ignore_errors=True)
             raise
+        logger.info(
+            "Archive extraction completed archive=%s destination=%s files=%d",
+            archive,
+            destination,
+            sum(not item.is_directory for item in members),
+        )
         return ExtractionResult(
             destination=destination,
             file_count=sum(not item.is_directory for item in members),
@@ -168,15 +192,30 @@ class ArchiveExtractor:
         return executable
 
     def _list_7zip(self, archive: Path) -> list[ArchiveMember]:
+        executable = self._seven_zip()
+        logger.info(
+            "Running archive inspection tool=7-Zip executable=%s archive=%s",
+            executable,
+            archive,
+        )
         process = subprocess.run(
-            [self._seven_zip(), "l", "-slt", "--", str(archive)],
+            [executable, "l", "-slt", "--", str(archive)],
             capture_output=True,
             text=True,
             check=False,
             timeout=60,
         )
         if process.returncode:
-            raise ArchiveError("7-Zip could not inspect the archive.")
+            detail = _process_detail(process)
+            logger.error(
+                "Archive inspection failed tool=7-Zip exit_code=%d detail=%r",
+                process.returncode,
+                detail,
+            )
+            raise ArchiveError(
+                f"7-Zip could not inspect the archive (exit {process.returncode}): "
+                f"{detail}"
+            )
         members: list[ArchiveMember] = []
         current: dict[str, str] = {}
         for line in process.stdout.splitlines() + [""]:
@@ -200,15 +239,82 @@ class ArchiveExtractor:
         return members
 
     def _extract_7zip(self, archive: Path, target: Path) -> None:
+        executable = self._seven_zip()
+        logger.info(
+            "Running archive extraction tool=7-Zip executable=%s archive=%s target=%s",
+            executable,
+            archive,
+            target,
+        )
         process = subprocess.run(
-            [self._seven_zip(), "x", "-y", f"-o{target}", "--", str(archive)],
+            [executable, "x", "-y", f"-o{target}", "--", str(archive)],
             capture_output=True,
             text=True,
             check=False,
             timeout=3600,
         )
         if process.returncode:
-            raise ArchiveError("7-Zip could not extract the archive.")
+            detail = _process_detail(process)
+            logger.error(
+                "Archive extraction failed tool=7-Zip exit_code=%d detail=%r",
+                process.returncode,
+                detail,
+            )
+            raise ArchiveError(
+                f"7-Zip could not extract the archive (exit {process.returncode}): "
+                f"{detail}"
+            )
+        logger.info("Archive extraction tool completed tool=7-Zip exit_code=0")
+
+    def _extract_rar(self, archive: Path, target: Path) -> None:
+        unrar = shutil.which("unrar")
+        unrar_failure: str | None = None
+        if unrar:
+            logger.info(
+                "Running RAR extraction tool=unrar executable=%s archive=%s target=%s",
+                unrar,
+                archive,
+                target,
+            )
+            process = subprocess.run(
+                [
+                    unrar,
+                    "x",
+                    "-y",
+                    "-o-",
+                    "-ol-",
+                    "-c-",
+                    "-idq",
+                    str(archive),
+                    f"{target}{os.sep}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3600,
+            )
+            if process.returncode == 0:
+                logger.info("Archive extraction tool completed tool=unrar exit_code=0")
+                return
+            detail = _process_detail(process)
+            unrar_failure = f"unrar exit {process.returncode}: {detail}"
+            logger.warning(
+                "RAR extraction failed tool=unrar exit_code=%d detail=%r; "
+                "trying 7-Zip fallback",
+                process.returncode,
+                detail,
+            )
+        else:
+            logger.warning("RAR extraction tool unrar was not found; trying 7-Zip")
+
+        try:
+            self._extract_7zip(archive, target)
+        except ArchiveError as exc:
+            if unrar_failure is None:
+                raise
+            raise ArchiveError(
+                f"RAR extraction failed. {unrar_failure}; 7-Zip fallback: {exc}"
+            ) from exc
 
     def _validate_extracted_tree(self, target: Path) -> None:
         total = 0
@@ -240,6 +346,14 @@ def _safe_member_path(name: str) -> Path:
 def _zip_is_link(info: zipfile.ZipInfo) -> bool:
     mode = info.external_attr >> 16
     return stat.S_ISLNK(mode)
+
+
+def _process_detail(process: subprocess.CompletedProcess[str]) -> str:
+    output = "\n".join(part for part in (process.stderr, process.stdout) if part)
+    normalized = " ".join(output.split())
+    if not normalized:
+        return "no diagnostic output"
+    return normalized[-1000:]
 
 
 def _archive_kind(path: Path) -> str:
