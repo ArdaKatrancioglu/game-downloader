@@ -184,6 +184,10 @@ class ArchiveExtractor:
 
     def _seven_zip(self) -> str:
         executable = shutil.which("7zz") or shutil.which("7z")
+        if not executable and os.name == "nt":
+            executable = _first_existing(
+                _windows_program_paths("7-Zip", "7z.exe")
+            )
         if not executable:
             raise ArchiveError(
                 "7-Zip/7zz is required for RAR and 7z archives. Install it from "
@@ -268,6 +272,10 @@ class ArchiveExtractor:
 
     def _extract_rar(self, archive: Path, target: Path) -> None:
         unrar = shutil.which("unrar")
+        if not unrar and os.name == "nt":
+            unrar = _first_existing(
+                _windows_program_paths("WinRAR", "UnRAR.exe")
+            )
         unrar_failure: str | None = None
         if unrar:
             logger.info(
@@ -354,6 +362,22 @@ def _process_detail(process: subprocess.CompletedProcess[str]) -> str:
     if not normalized:
         return "no diagnostic output"
     return normalized[-1000:]
+
+
+def _windows_program_paths(folder: str, executable: str) -> list[Path]:
+    candidates = []
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(variable)
+        if root:
+            candidates.append(Path(root) / folder / executable)
+    return candidates
+
+
+def _first_existing(candidates: list[Path]) -> str | None:
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _archive_kind(path: Path) -> str:

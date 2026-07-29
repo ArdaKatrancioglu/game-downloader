@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
@@ -18,11 +19,19 @@ def _state_folder() -> Path:
 
 def _configure_logging(level: str, log_folder: Path) -> None:
     log_folder.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=log_folder / "application.log",
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handler = RotatingFileHandler(
+        log_folder / "application.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
     )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
     logging.getLogger(__name__).info(
         "Application logging started level=%s log_file=%s",
         level.upper(),

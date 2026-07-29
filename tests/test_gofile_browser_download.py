@@ -5,6 +5,7 @@ import pytest
 from game_downloader.storage.gofile_browser_download import (
     GoFileBrowserDownload,
     GoFileBrowserDownloadError,
+    _available_download_path,
     _is_gofile_host,
     _validate_download_url,
     _validate_share_page,
@@ -28,6 +29,15 @@ def test_navigation_and_download_hosts_are_restricted_to_gofile():
         _validate_share_page("https://evil.example/d/owned123", "owned123")
     with pytest.raises(GoFileBrowserDownloadError, match="unexpected URL"):
         _validate_download_url("https://evil.example/file.zip")
+
+
+def test_existing_downloads_get_a_non_overwriting_name(tmp_path):
+    (tmp_path / "owned.rar").write_bytes(b"existing")
+    (tmp_path / "owned (2).rar.part").write_bytes(b"partial")
+
+    result = _available_download_path(tmp_path, "owned.rar")
+
+    assert result == tmp_path / "owned (3).rar"
 
 
 @pytest.mark.asyncio

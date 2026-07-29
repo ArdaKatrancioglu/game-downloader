@@ -5,10 +5,11 @@ import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -29,18 +30,16 @@ from game_downloader.catalog.json_provider import LocalJsonCatalogProvider
 from game_downloader.catalog.owned_html_provider import OwnedHtmlCatalogProvider
 from game_downloader.download.manager import DownloadManager
 from game_downloader.models import (
-    DownloadProgress,
     ExtractionLimits,
     GameEntry,
     GameRelease,
-    ResolvedDownload,
 )
 from game_downloader.settings import AppSettings, SettingsRepository
 from game_downloader.storage.gofile_browser_download import GoFileBrowserDownload
 from game_downloader.ui.settings_dialog import SettingsDialog
+from game_downloader.ui.theme import APP_STYLESHEET
 from game_downloader.ui.workers import (
     CoroutineWorker,
-    DownloadWorker,
     GoFileBrowserWorker,
 )
 
@@ -56,91 +55,147 @@ class MainWindow(QMainWindow):
         self.repository = repository
         self.entries: list[GameEntry] = []
         self.current_release: GameRelease | None = None
-        self.resolved: ResolvedDownload | None = None
         self.downloaded_path: Path | None = None
+        self.extracted_path: Path | None = None
         self.active_provider = None
-        self.workers: set[
-            CoroutineWorker | DownloadWorker | GoFileBrowserWorker
-        ] = set()
-        self.download_worker: DownloadWorker | None = None
+        self.workers: set[CoroutineWorker | GoFileBrowserWorker] = set()
         self.setWindowTitle("Authorized Game Downloader")
-        self.resize(900, 700)
+        self.setMinimumSize(940, 720)
+        self.resize(1080, 800)
+        self.setStyleSheet(APP_STYLESHEET)
         self._build_ui()
 
     def _build_ui(self) -> None:
         root = QWidget()
+        root.setObjectName("appRoot")
         layout = QVBoxLayout(root)
-        toolbar = QHBoxLayout()
-        settings_button = QPushButton("Settings")
-        settings_button.clicked.connect(self._open_settings)
-        toolbar.addStretch()
-        toolbar.addWidget(settings_button)
-        layout.addLayout(toolbar)
+        layout.setContentsMargins(30, 24, 30, 28)
+        layout.setSpacing(14)
 
-        title = QLabel("Download authorized game archives")
-        title.setStyleSheet("font-size: 22px; font-weight: 600")
-        layout.addWidget(title)
+        header = QFrame()
+        header.setObjectName("headerCard")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        brand = QVBoxLayout()
+        brand.setSpacing(2)
+        eyebrow = QLabel("AUTHORIZED CONTENT WORKSPACE")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("Game archive manager")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel(
+            "Search your catalog, capture the authorized download, and extract it safely."
+        )
+        subtitle.setObjectName("subtitle")
+        brand.addWidget(eyebrow)
+        brand.addWidget(title)
+        brand.addWidget(subtitle)
+        header_layout.addLayout(brand)
+        header_layout.addStretch()
+        logs_button = QPushButton("Open logs")
+        logs_button.setObjectName("quietButton")
+        logs_button.clicked.connect(self._open_logs)
+        settings_button = QPushButton("Settings")
+        settings_button.setObjectName("quietButton")
+        settings_button.clicked.connect(self._open_settings)
+        header_layout.addWidget(logs_button)
+        header_layout.addWidget(settings_button)
+        layout.addWidget(header)
+
+        steps = QLabel(
+            "1  Search catalog     ›     2  Select result     ›     "
+            "3  Download & extract"
+        )
+        steps.setObjectName("stepText")
+        layout.addWidget(steps)
+
+        search_card = QFrame()
+        search_card.setProperty("class", "card")
+        search_layout = QVBoxLayout(search_card)
+        search_layout.setContentsMargins(18, 14, 18, 18)
+        search_layout.setSpacing(10)
+        search_title = QLabel("Find an archive")
+        search_title.setObjectName("sectionTitle")
+        search_layout.addWidget(search_title)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter a game title")
+        self.search_input.setClearButtonEnabled(True)
         self.search_input.returnPressed.connect(self._search)
         self.search_button = QPushButton("Search")
+        self.search_button.setObjectName("primaryButton")
         self.search_button.setMinimumHeight(42)
         self.search_button.clicked.connect(self._search)
         search_row = QHBoxLayout()
+        search_row.setSpacing(10)
         search_row.addWidget(self.search_input, 1)
         search_row.addWidget(self.search_button)
-        layout.addLayout(search_row)
+        search_layout.addLayout(search_row)
+        layout.addWidget(search_card)
 
+        results_title = QLabel("Catalog results")
+        results_title.setObjectName("sectionTitle")
+        layout.addWidget(results_title)
         self.results = QListWidget()
+        self.results.setSpacing(2)
         self.results.itemDoubleClicked.connect(lambda _: self._select_result())
+        self.results.currentRowChanged.connect(
+            lambda row: self.select_button.setEnabled(row >= 0)
+        )
         layout.addWidget(self.results, 1)
-        self.select_button = QPushButton("Select result")
+        self.select_button = QPushButton("Use selected result")
+        self.select_button.setObjectName("primaryButton")
         self.select_button.setEnabled(False)
         self.select_button.clicked.connect(self._select_result)
         layout.addWidget(self.select_button)
 
         details = QGroupBox("Selected archive")
+        details.setMinimumHeight(190)
         grid = QGridLayout(details)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(1, 1)
         self.archive_label = QLabel("No archive selected")
         self.size_label = QLabel("—")
+        self.source_label = QLabel("—")
         self.destination = QLineEdit(str(self.settings.default_download_folder))
         browse = QPushButton("Choose…")
         browse.clicked.connect(self._choose_destination)
         self.space_label = QLabel("Available space: —")
+        self.space_label.setObjectName("mutedLabel")
         grid.addWidget(QLabel("Archive"), 0, 0)
         grid.addWidget(self.archive_label, 0, 1, 1, 2)
         grid.addWidget(QLabel("Size"), 1, 0)
         grid.addWidget(self.size_label, 1, 1, 1, 2)
-        grid.addWidget(QLabel("Destination"), 2, 0)
-        grid.addWidget(self.destination, 2, 1)
-        grid.addWidget(browse, 2, 2)
-        grid.addWidget(self.space_label, 3, 1, 1, 2)
+        grid.addWidget(QLabel("Source"), 2, 0)
+        grid.addWidget(self.source_label, 2, 1, 1, 2)
+        grid.addWidget(QLabel("Destination"), 3, 0)
+        grid.addWidget(self.destination, 3, 1)
+        grid.addWidget(browse, 3, 2)
+        grid.addWidget(self.space_label, 4, 1, 1, 2)
         layout.addWidget(details)
+        layout.addSpacing(6)
 
+        activity_title = QLabel("Activity")
+        activity_title.setObjectName("sectionTitle")
+        layout.addWidget(activity_title)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.status = QLabel("Ready")
+        self.status.setObjectName("statusText")
+        self.status.setWordWrap(True)
         controls = QHBoxLayout()
-        self.download_button = QPushButton("Download")
+        self.download_button = QPushButton("Download and extract")
+        self.download_button.setObjectName("primaryButton")
         self.download_button.setEnabled(False)
         self.download_button.clicked.connect(self._download)
-        self.pause_button = QPushButton("Pause")
-        self.resume_button = QPushButton("Resume")
-        self.cancel_button = QPushButton("Cancel")
-        self.pause_button.clicked.connect(self._pause)
-        self.resume_button.clicked.connect(self._resume)
-        self.cancel_button.clicked.connect(self._cancel)
-        for button in (self.pause_button, self.resume_button, self.cancel_button):
-            button.setEnabled(False)
         controls.addWidget(self.download_button)
-        controls.addWidget(self.pause_button)
-        controls.addWidget(self.resume_button)
-        controls.addWidget(self.cancel_button)
         self.extract_button = QPushButton("Extract archive")
         self.extract_button.setEnabled(False)
         self.extract_button.clicked.connect(self._extract)
+        self.open_folder_button = QPushButton("Open folder")
+        self.open_folder_button.setEnabled(False)
+        self.open_folder_button.clicked.connect(self._open_extracted_folder)
         controls.addStretch()
         controls.addWidget(self.extract_button)
+        controls.addWidget(self.open_folder_button)
         layout.addWidget(self.progress)
         layout.addWidget(self.status)
         layout.addLayout(controls)
@@ -157,7 +212,7 @@ class MainWindow(QMainWindow):
 
     def _start_worker(
         self,
-        worker: CoroutineWorker | DownloadWorker | GoFileBrowserWorker,
+        worker: CoroutineWorker | GoFileBrowserWorker,
     ) -> None:
         self.workers.add(worker)
         worker.finished.connect(lambda: self.workers.discard(worker))
@@ -166,7 +221,8 @@ class MainWindow(QMainWindow):
     def _search(self) -> None:
         query = self.search_input.text().strip()
         if not query:
-            QMessageBox.information(self, "Search", "Enter a game title.")
+            self.status.setText("Enter a game title to search your authorized catalog.")
+            self.search_input.setFocus(Qt.FocusReason.OtherFocusReason)
             return
         self.search_button.setEnabled(False)
         self.status.setText("Searching the authorized catalog…")
@@ -188,12 +244,14 @@ class MainWindow(QMainWindow):
                 )
             )
         self.select_button.setEnabled(bool(self.entries))
+        if self.entries:
+            self.results.setCurrentRow(0)
         self.status.setText(f"{len(self.entries)} result(s)")
 
     def _select_result(self) -> None:
         row = self.results.currentRow()
         if row < 0:
-            QMessageBox.information(self, "Select", "Choose a search result first.")
+            self.status.setText("Choose a catalog result first.")
             return
         entry = self.entries[row]
         self.status.setText("Following the selected catalog page…")
@@ -210,11 +268,13 @@ class MainWindow(QMainWindow):
 
     def _catalog_release_ready(self, value: object) -> None:
         self.current_release = value
-        self.resolved = None
         self.archive_label.setText(
-            f"GoFile content {self.current_release.source.content_id}"
+            f"{self.current_release.title} · {self.current_release.version}"
         )
         self.size_label.setText(_format_bytes(self.current_release.archive_size))
+        self.source_label.setText(
+            f"GoFile · {self.current_release.source.content_id}"
+        )
         self.download_button.setEnabled(True)
         self._update_space()
         self.status.setText(
@@ -242,6 +302,9 @@ class MainWindow(QMainWindow):
     def _download(self) -> None:
         if self.current_release is None:
             return
+        self.extracted_path = None
+        self.open_folder_button.setEnabled(False)
+        self.extract_button.setEnabled(False)
         folder = Path(self.destination.text()).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
         expected_size = self.current_release.archive_size
@@ -274,7 +337,6 @@ class MainWindow(QMainWindow):
         worker.notice.connect(self.status.setText)
         worker.succeeded.connect(self._download_finished)
         worker.failed.connect(self._download_failed)
-        worker.finished.connect(lambda: self.download_button.setEnabled(True))
         self.progress.setRange(0, 0)
         self.status.setText(
             "Opening visible GoFile Chromium. Complete verification if shown; "
@@ -282,36 +344,6 @@ class MainWindow(QMainWindow):
         )
         self.download_button.setEnabled(False)
         self._start_worker(worker)
-
-    def _download_progress(self, value: DownloadProgress) -> None:
-        if value.percent is None:
-            self.progress.setRange(0, 0)
-        else:
-            self.progress.setRange(0, 100)
-            self.progress.setValue(int(value.percent))
-        eta = "—" if value.eta_seconds is None else f"{value.eta_seconds:.0f}s"
-        self.status.setText(
-            f"{_format_bytes(value.downloaded)} / {_format_bytes(value.total)}  •  "
-            f"{_format_bytes(int(value.bytes_per_second))}/s  •  ETA {eta}"
-        )
-
-    def _pause(self) -> None:
-        if self.download_worker:
-            self.download_worker.pause_download()
-            self.status.setText("Paused")
-
-    def _resume(self) -> None:
-        if self.download_worker:
-            self.download_worker.resume_download()
-
-    def _cancel(self) -> None:
-        if self.download_worker:
-            self.download_worker.cancel_download()
-
-    def _download_controls_off(self) -> None:
-        for button in (self.pause_button, self.resume_button, self.cancel_button):
-            button.setEnabled(False)
-        self.download_worker = None
 
     def _download_finished(self, value: object) -> None:
         self.downloaded_path = Path(value)
@@ -323,25 +355,21 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self.status.setText(f"Validated download: {self.downloaded_path}")
-        self.extract_button.setEnabled(True)
+        self._start_extraction()
 
     def _download_failed(self, message: str) -> None:
         self.progress.setRange(0, 100)
+        self.download_button.setEnabled(True)
         self._show_error(message)
 
     def _extract(self) -> None:
+        self._start_extraction()
+
+    def _start_extraction(self) -> None:
         if not self.downloaded_path:
             return
-        answer = QMessageBox.question(
-            self,
-            "Extract archive",
-            "Inspect and safely extract this archive now?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        destination = self.downloaded_path.parent / (
-            self.downloaded_path.name.split(".", 1)[0] + "-extracted"
+        destination = _available_extraction_destination(
+            self.downloaded_path,
         )
         extractor = ArchiveExtractor(
             ExtractionLimits(
@@ -355,6 +383,7 @@ class MainWindow(QMainWindow):
         worker.succeeded.connect(self._extraction_finished)
         worker.failed.connect(self._extraction_failed)
         self.extract_button.setEnabled(False)
+        self.open_folder_button.setEnabled(False)
         self.status.setText(
             "Inspecting the archive and extracting it with the available tool…"
         )
@@ -362,19 +391,23 @@ class MainWindow(QMainWindow):
 
     def _extraction_failed(self, message: str) -> None:
         self.extract_button.setEnabled(True)
+        self.download_button.setEnabled(True)
         self._show_error(message)
 
     def _extraction_finished(self, value: object) -> None:
+        self.extracted_path = Path(value.destination)
         self.extract_button.setEnabled(False)
+        self.download_button.setEnabled(True)
+        self.open_folder_button.setEnabled(True)
         self.status.setText(f"Extraction validated: {value.destination}")
-        answer = QMessageBox.information(
-            self,
-            "Extraction complete",
-            "The archive was safely extracted. Open the destination folder?",
-            QMessageBox.StandardButton.Open | QMessageBox.StandardButton.Close,
-        )
-        if answer == QMessageBox.StandardButton.Open:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(value.destination)))
+
+    def _open_extracted_folder(self) -> None:
+        if self.extracted_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.extracted_path)))
+
+    def _open_logs(self) -> None:
+        self.repository.path.parent.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.repository.path.parent)))
 
     def _show_error(self, message: str) -> None:
         self.status.setText("Operation stopped")
@@ -400,3 +433,20 @@ def _format_bytes(value: int | None) -> str:
             return f"{amount:.1f} {unit}"
         amount /= 1024
     return "Unknown"
+
+
+def _available_extraction_destination(archive: Path) -> Path:
+    name = archive.name
+    lowered = name.casefold()
+    for suffix in (".tar.gz", ".tgz", ".zip", ".tar", ".7z", ".rar"):
+        if lowered.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    if not name:
+        name = "archive"
+    candidate = archive.parent / f"{name}-extracted"
+    index = 2
+    while candidate.exists():
+        candidate = archive.parent / f"{name}-extracted ({index})"
+        index += 1
+    return candidate

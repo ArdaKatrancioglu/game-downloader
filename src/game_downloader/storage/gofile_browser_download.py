@@ -173,20 +173,12 @@ class GoFileBrowserDownload:
                         notice,
                         f"Chromium download started: {filename}. Saving to .part…",
                     )
-                    final_path = (destination / filename).resolve()
+                    final_path = _available_download_path(destination, filename)
                     if final_path.parent != destination.resolve():
                         raise GoFileBrowserDownloadError(
                             "GoFile suggested an unsafe filename."
                         )
-                    if final_path.exists():
-                        raise GoFileBrowserDownloadError(
-                            "A file with this name already exists."
-                        )
                     partial_path = final_path.with_name(final_path.name + ".part")
-                    if partial_path.exists():
-                        raise GoFileBrowserDownloadError(
-                            "A partial download with this name already exists."
-                        )
                     logger.info(
                         "GoFile browser download captured source=%s "
                         "suggested_filename=%r partial_path=%s",
@@ -340,6 +332,18 @@ def _is_gofile_host(host: str | None) -> bool:
         return False
     normalized = host.rstrip(".").lower()
     return normalized == GOFILE_HOST or normalized.endswith(f".{GOFILE_HOST}")
+
+
+def _available_download_path(destination: Path, filename: str) -> Path:
+    destination = destination.resolve()
+    candidate = (destination / filename).resolve()
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    index = 2
+    while candidate.exists() or candidate.with_name(candidate.name + ".part").exists():
+        candidate = (destination / f"{stem} ({index}){suffix}").resolve()
+        index += 1
+    return candidate
 
 
 def _notify(callback: Callable[[str], None] | None, message: str) -> None:

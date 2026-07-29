@@ -37,14 +37,18 @@ The app uses GoFile's public download-page flow and does not call the GoFile
 API. This is intentional: GoFile documents public download pages for free
 users, while direct links and full API access are Premium features.
 
-After selecting an authorized result, click **Download**. When **visible
+After selecting an authorized result, click **Download & extract**. This single
+explicit action authorizes both operations, so the app does not interrupt the
+flow with a second extraction-confirmation dialog. When **visible
 GoFile browser downloads (no API)** is enabled in Settings, the app opens a
 dedicated visible Chromium profile at exactly
 `https://gofile.io/d/<contentId>`. It waits for exactly one visible control
 whose accessible name is **Download**, clicks it, captures Playwright's browser
 download event, saves into `<filename>.part`, and publishes the final filename
-only after Chromium reports successful completion. The Chromium window closes
-automatically after the file is saved.
+only after Chromium reports successful completion. It then safely extracts the
+archive into a new, non-overwriting folder. The Chromium window closes
+automatically after the file is saved, and extraction completion is reported
+inside the main window with an optional **Open folder** button.
 
 The browser is deliberately headed rather than hidden. If GoFile presents
 CAPTCHA or human verification, complete it yourself in that visible window.
@@ -129,7 +133,10 @@ Captured GoFile browser downloads are never loaded fully into application
 memory. Playwright owns the network transfer; the app saves to
 `<filename>.part` and atomically renames after completion. The UI warns below
 1.5× free-space headroom. Playwright does not expose byte-level progress for a
-browser `Download`, so this path uses an indeterminate progress indicator.
+browser `Download`, so this path uses an indeterminate progress indicator and
+shows each capture, save, validation, and extraction stage in the Activity
+area. Existing downloads and extraction folders are preserved; a numbered
+destination is selected automatically instead of asking to overwrite.
 
 ZIP and TAR formats use the Python standard library. RAR prefers an already
 installed official `unrar` executable and falls back to 7-Zip. The 7z format
@@ -185,14 +192,37 @@ not add browser impersonation, cookies, CAPTCHA handling, or anti-bot bypasses.
 
 ## Packaging
 
-Install PyInstaller and build on each target operating system:
+PyInstaller builds must run on the target operating system. For Windows,
+PowerShell 7 or Windows PowerShell can build a tested one-folder distribution:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\build_windows.ps1
+```
+
+The script installs the locked development/browser/packaging dependencies,
+downloads the official Playwright Chromium build into a private build folder,
+runs Ruff and the complete test suite, and bundles Chromium into:
+
+```text
+dist\AuthorizedGameDownloader\
+```
+
+Launch `AuthorizedGameDownloader.exe` from that folder. Copy the entire folder,
+not only the `.exe`, when testing another Windows computer. Install official
+7-Zip separately for `.7z` and `.rar` extraction; the application detects both
+PATH installations and the standard `C:\Program Files\7-Zip\7z.exe` location.
+
+For a regular platform-local build:
 
 ```bash
 uv sync --extra packaging
 uv run pyinstaller authorized_game_downloader.spec
 ```
 
-Build Windows artifacts on Windows and macOS artifacts on macOS. Code signing,
+The spec is platform-aware and includes a Playwright browser only when
+`PLAYWRIGHT_BROWSERS_PATH` points at an installed browser directory. Build
+Windows artifacts on Windows and macOS artifacts on macOS. Code signing,
 notarization, and installer creation remain release-owner responsibilities.
 
 ## Security limitations and known limitations

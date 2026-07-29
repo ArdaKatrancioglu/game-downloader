@@ -12,6 +12,7 @@ from game_downloader.archive.extractor import (
     detect_archive_kind,
 )
 from game_downloader.models import ExtractionLimits
+from game_downloader.ui.main_window import _available_extraction_destination
 
 
 def write_zip(path, entries):
@@ -33,6 +34,16 @@ def test_detects_imported_browser_download_by_signature(tmp_path):
     archive = tmp_path / "browser-download-without-extension"
     write_zip(archive, [("readme.txt", b"authorized")])
     assert detect_archive_kind(archive) == "zip"
+
+
+def test_extraction_destination_preserves_existing_output(tmp_path):
+    archive = tmp_path / "owned.release.rar"
+    archive.write_bytes(b"Rar!\x1a\x07\x01\x00")
+    (tmp_path / "owned.release-extracted").mkdir()
+
+    assert _available_extraction_destination(archive) == (
+        tmp_path / "owned.release-extracted (2)"
+    )
 
 
 @pytest.mark.parametrize("name", ["../escape.txt", "/absolute.txt", "C:\\escape.txt"])
