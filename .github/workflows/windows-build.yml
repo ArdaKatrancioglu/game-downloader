@@ -1,0 +1,36 @@
+name: Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@v4
+
+      - name: uv kur
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Tek EXE üret
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+
+      - name: EXE dosyasını artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: IpsumIndirici-Windows
+          path: dist/IpsumIndirici.exe
+          if-no-files-found: error
+          retention-days: 14

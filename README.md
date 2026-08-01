@@ -124,8 +124,14 @@ Platforma özel PyInstaller derlemesi:
 
 ```bash
 uv sync --extra packaging
-uv run pyinstaller authorized_game_downloader.spec
+uv run pyinstaller ipsum_indirici.spec
 ```
 
-Windows için `scripts/build_windows.ps1` kullanılabilir. Windows çıktısını
-Windows üzerinde, macOS çıktısını macOS üzerinde üretin.
+Windows'ta `scripts/build_windows.ps1` çalıştırıldığında Python, PySide6 ve
+diğer çalışma zamanı bağımlılıklarını içeren tek bir
+`dist/IpsumIndirici.exe` üretilir. Windows çıktısını Windows üzerinde,
+macOS çıktısını macOS üzerinde üretin.
+
+macOS geliştiricileri GitHub'daki **Actions > Windows EXE > Run workflow**
+akışını çalıştırabilir. İş tamamlandığında **IpsumIndirici-Windows** artifact'ı
+indirilir; içindeki EXE hedef bilgisayarda Python kurulumu gerektirmez.

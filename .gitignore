@@ -7,6 +7,6 @@ build/
 .build-assets/
 dist/
 *.spec
-!authorized_game_downloader.spec
+!ipsum_indirici.spec
 *.part
 *.log

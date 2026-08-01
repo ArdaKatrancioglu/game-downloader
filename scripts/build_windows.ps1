@@ -8,17 +8,13 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     throw "uv is required. Install it from https://docs.astral.sh/uv/ and retry."
 }
 
-uv sync --extra dev --extra browser --extra packaging
-
-$BrowserBundle = Join-Path $ProjectRoot ".build-assets\playwright-browsers"
-$env:PLAYWRIGHT_BROWSERS_PATH = $BrowserBundle
-uv run playwright install chromium
+uv sync --extra dev --extra packaging --frozen
 
 uv run ruff check .
 uv run pytest
-uv run pyinstaller --noconfirm --clean authorized_game_downloader.spec
+uv run pyinstaller --noconfirm --clean ipsum_indirici.spec
 
-$Executable = Join-Path $ProjectRoot "dist\AuthorizedGameDownloader\AuthorizedGameDownloader.exe"
+$Executable = Join-Path $ProjectRoot "dist\IpsumIndirici.exe"
 if (-not (Test-Path $Executable)) {
     throw "Build completed without the expected executable: $Executable"
 }
@@ -26,4 +22,4 @@ if (-not (Test-Path $Executable)) {
 Write-Host ""
 Write-Host "Windows build ready:"
 Write-Host $Executable
-Write-Host "Copy the entire dist\AuthorizedGameDownloader folder when testing another PC."
+Write-Host "Bu tek EXE dosyasını başka bir Windows bilgisayara doğrudan kopyalayabilirsiniz."
