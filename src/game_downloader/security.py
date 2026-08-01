@@ -4,7 +4,7 @@ import ipaddress
 import re
 import socket
 from collections.abc import Iterable
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 
 class SecurityError(ValueError):
@@ -12,6 +12,10 @@ class SecurityError(ValueError):
 
 
 _CONTENT_ID = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
+_FUCKINGFAST_PART = re.compile(
+    r"^(?P<name>.+--_\.part(?P<number>\d+)\.rar)$",
+    re.IGNORECASE,
+)
 _TOKEN_PATTERN = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)(\S+)")
 _SENSITIVE_QUERY = {
     "t",
@@ -66,6 +70,46 @@ def extract_gofile_content_id(value: str) -> str:
     ):
         raise SecurityError("The GoFile share URL has an invalid content identifier.")
     return parts[1]
+
+
+def validate_filecrypt_container_url(value: str) -> str:
+    parsed = urlsplit(value)
+    host = normalized_host(parsed.hostname)
+    if (
+        parsed.scheme != "https"
+        or (
+            host != "filecrypt.cc"
+            and not host.endswith(".filecrypt.cc")
+        )
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not re.fullmatch(r"/Container/[A-Za-z0-9_-]+\.html", parsed.path)
+    ):
+        raise SecurityError("Geçersiz FileCrypt container bağlantısı.")
+    return value
+
+
+def validate_fuckingfast_part_url(value: str) -> tuple[str, int]:
+    parsed = urlsplit(value)
+    host = normalized_host(parsed.hostname)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if (
+        parsed.scheme != "https"
+        or host not in {"fuckingfast.co", "www.fuckingfast.co"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or len(path_parts) != 1
+        or not _CONTENT_ID.fullmatch(path_parts[0])
+    ):
+        raise SecurityError("Geçersiz FuckingFast parça bağlantısı.")
+    filename = unquote(parsed.fragment)
+    match = _FUCKINGFAST_PART.fullmatch(filename)
+    if not match or safe_filename(filename) != filename:
+        raise SecurityError("FuckingFast bağlantısında geçerli bir part dosya adı yok.")
+    return filename, int(match.group("number"))
 
 
 def is_public_ip(value: str) -> bool:

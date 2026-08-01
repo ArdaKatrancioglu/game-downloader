@@ -4,6 +4,7 @@ from game_downloader.security import (
     SecurityError,
     extract_gofile_content_id,
     redact_diagnostic,
+    validate_filecrypt_container_url,
     validate_https_url,
 )
 
@@ -23,6 +24,19 @@ def test_gofile_share_validation():
         extract_gofile_content_id("https://not-gofile.example/d/owned_123")
     with pytest.raises(SecurityError):
         extract_gofile_content_id("https://gofile.io/owned_123")
+
+
+def test_filecrypt_container_validation():
+    url = "https://www.filecrypt.cc/Container/AB5EBFD7FB.html"
+    assert validate_filecrypt_container_url(url) == url
+    with pytest.raises(SecurityError):
+        validate_filecrypt_container_url(
+            "https://www.filecrypt.cc.evil.example/Container/AB5EBFD7FB.html"
+        )
+    with pytest.raises(SecurityError):
+        validate_filecrypt_container_url(
+            "https://www.filecrypt.cc/Link/AB5EBFD7FB.html"
+        )
 
 
 def test_redaction_removes_bearer_and_sensitive_query():

@@ -79,6 +79,58 @@ def test_download_parser_skips_other_hosts_and_accepts_protocol_relative_gofile(
     assert OwnedHtmlCatalogProvider._find_download_content_id(html) == "ud2omH"
 
 
+def test_download_parser_accepts_protocol_relative_filecrypt_container():
+    html = """
+    <p style="text-align: center;">
+      <span><strong>GOFILE</strong></span><br>
+      <a href="//www.filecrypt.cc/Container/AB5EBFD7FB.html"
+         target="_blank"
+         rel="nofollow"
+         class="shortc-button medium purple">
+        DOWNLOAD HERE
+      </a>
+    </p>
+    """
+
+    source = OwnedHtmlCatalogProvider._find_download_source(html)
+
+    assert source.type == "filecrypt"
+    assert str(source.url) == (
+        "https://www.filecrypt.cc/Container/AB5EBFD7FB.html"
+    )
+
+
+@pytest.mark.asyncio
+async def test_owned_catalog_returns_filecrypt_release_from_detail_page():
+    detail = """
+    <a href="//www.filecrypt.cc/Container/AB5EBFD7FB.html">
+      DOWNLOAD HERE
+    </a>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        fixture = (FIXTURES / "catalog_search.html").read_text()
+        return httpx.Response(
+            200,
+            text=fixture if request.url.path == "/" else detail,
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OwnedHtmlCatalogProvider(
+            "https://catalog.example/",
+            ["catalog.example"],
+            client=client,
+        )
+        results = await provider.search("Demo")
+        release = await provider.get_release(results[0].id)
+
+    assert release.source.type == "filecrypt"
+    assert str(release.source.url) == (
+        "https://www.filecrypt.cc/Container/AB5EBFD7FB.html"
+    )
+
+
 @pytest.mark.asyncio
 async def test_owned_catalog_skips_external_results():
     html = (

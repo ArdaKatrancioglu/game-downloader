@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+from game_downloader.security import validate_filecrypt_container_url
 
 
 class GoFileSource(BaseModel):
@@ -20,6 +22,43 @@ class GoFileSource(BaseModel):
         return value
 
 
+class FileCryptSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["filecrypt"] = "filecrypt"
+    url: HttpUrl
+
+    @field_validator("url")
+    @classmethod
+    def url_is_safe(cls, value: HttpUrl) -> HttpUrl:
+        validate_filecrypt_container_url(str(value))
+        return value
+
+
+class FuckingFastPart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page_url: HttpUrl
+    filename: str = Field(min_length=1, max_length=500)
+    part_number: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def page_and_filename_are_safe(self) -> FuckingFastPart:
+        from game_downloader.security import validate_fuckingfast_part_url
+
+        filename, part_number = validate_fuckingfast_part_url(str(self.page_url))
+        if self.filename != filename or self.part_number != part_number:
+            raise ValueError("FuckingFast part metadata does not match its URL.")
+        return self
+
+
+class FuckingFastSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["fuckingfast"] = "fuckingfast"
+    parts: list[FuckingFastPart] = Field(min_length=1)
+
+
 class GameEntry(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -30,11 +69,11 @@ class GameEntry(BaseModel):
     archive_size: int | None = Field(default=None, ge=0)
     source_name: str = "GoFile"
     detail_url: HttpUrl | None = None
-    source: GoFileSource | None = None
+    source: GoFileSource | FileCryptSource | FuckingFastSource | None = None
 
 
 class GameRelease(GameEntry):
-    source: GoFileSource
+    source: GoFileSource | FileCryptSource | FuckingFastSource
 
 
 class CatalogDocument(BaseModel):
@@ -62,6 +101,7 @@ class ResolvedDownload(BaseModel):
     url: HttpUrl
     referer: HttpUrl | None = None
     checksum_sha256: str | None = None
+    require_attachment: bool = False
 
 
 class DownloadProgress(BaseModel):

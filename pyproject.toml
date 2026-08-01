@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "authorized-game-downloader"
 version = "0.1.0"
-description = "Desktop downloader for user-owned game catalogs and authorized GoFile content"
+description = "Web search and sequential multipart downloader for authorized game archives"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -49,3 +49,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 "src/game_downloader/download/manager.py" = ["ASYNC230", "ASYNC240"]
 "src/game_downloader/archive/extractor.py" = ["ASYNC230", "ASYNC240"]
 "src/game_downloader/storage/gofile_browser_download.py" = ["ASYNC230", "ASYNC240"]
+"src/game_downloader/storage/fuckingfast_download.py" = ["ASYNC230", "ASYNC240"]

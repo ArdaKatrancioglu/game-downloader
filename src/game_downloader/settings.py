@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -16,15 +16,27 @@ class AppSettings(BaseSettings):
         extra="ignore",
     )
 
-    catalog_url: str | None = None
-    catalog_file: Path = Path("catalog.example.json")
-    allowed_catalog_domains: list[str] = Field(default_factory=list)
+    web_search_url: str | None = None
+    allowed_search_domains: list[str] = Field(default_factory=list)
     default_download_folder: Path = Path.home() / "Downloads"
     max_extracted_archive_size: int = 50 * 1024**3
     max_extracted_file_count: int = 100_000
-    gofile_browser_download_enabled: bool = False
-    remember_gofile_browser_session: bool = True
     log_level: str = "INFO"
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_catalog_search_settings(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if "web_search_url" not in migrated and "catalog_url" in migrated:
+            migrated["web_search_url"] = migrated["catalog_url"]
+        if (
+            "allowed_search_domains" not in migrated
+            and "allowed_catalog_domains" in migrated
+        ):
+            migrated["allowed_search_domains"] = migrated["allowed_catalog_domains"]
+        return migrated
 
 
 class SettingsRepository:

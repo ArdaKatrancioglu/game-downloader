@@ -7,7 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from game_downloader.download.manager import DownloadManager
-from game_downloader.models import DownloadProgress, ResolvedDownload
+from game_downloader.models import DownloadProgress, FuckingFastSource, ResolvedDownload
+from game_downloader.storage.fuckingfast_download import FuckingFastDownloader
 from game_downloader.storage.gofile_browser_download import GoFileBrowserDownload
 
 
@@ -50,6 +51,39 @@ class GoFileBrowserWorker(QThread):
                 self.browser_download.download(
                     self.content_id,
                     self.destination,
+                    notice=self.notice.emit,
+                )
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+
+
+class FuckingFastWorker(QThread):
+    progress = Signal(object)
+    notice = Signal(str)
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        downloader: FuckingFastDownloader,
+        source: FuckingFastSource,
+        destination: Path,
+    ) -> None:
+        super().__init__()
+        self.downloader = downloader
+        self.source = source
+        self.destination = destination
+
+    def run(self) -> None:
+        try:
+            result = asyncio.run(
+                self.downloader.download(
+                    self.source,
+                    self.destination,
+                    progress=self.progress.emit,
                     notice=self.notice.emit,
                 )
             )

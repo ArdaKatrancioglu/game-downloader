@@ -9,10 +9,16 @@ from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
 
 from game_downloader.http_diagnostics import HttpTrace
-from game_downloader.models import GameEntry, GameRelease, GoFileSource
+from game_downloader.models import (
+    FileCryptSource,
+    GameEntry,
+    GameRelease,
+    GoFileSource,
+)
 from game_downloader.security import (
     SecurityError,
     extract_gofile_content_id,
+    validate_filecrypt_container_url,
     validate_https_url,
 )
 
@@ -211,16 +217,17 @@ class OwnedHtmlCatalogProvider:
         source = entry.source
         if entry.detail_url:
             response = await self._get(str(entry.detail_url))
-            source = GoFileSource(
-                content_id=self._find_download_content_id(response.text)
-            )
+            source = self._find_download_source(response.text)
         if source is None:
             raise ValueError("The selected page does not contain an approved download link.")
         return GameRelease(**entry.model_dump(exclude={"source"}), source=source)
 
     @staticmethod
-    def _find_download_content_id(html: str) -> str:
+    def _find_download_source(
+        html: str,
+    ) -> GoFileSource | FileCryptSource:
         soup = BeautifulSoup(html, "html.parser")
+        filecrypt_source = None
         for link in soup.find_all("a", href=True):
             if _is_hidden(link):
                 continue
@@ -231,13 +238,33 @@ class OwnedHtmlCatalogProvider:
             if href.startswith("//"):
                 href = "https:" + href
             try:
-                return extract_gofile_content_id(href)
+                return GoFileSource(
+                    content_id=extract_gofile_content_id(href)
+                )
+            except SecurityError:
+                pass
+            try:
+                validated = validate_filecrypt_container_url(href)
             except SecurityError:
                 logger.info(
-                    "Skipping visible DOWNLOAD HERE link because it is not a GoFile share."
+                    "Skipping visible DOWNLOAD HERE link because it is not "
+                    "a GoFile share or FileCrypt container."
                 )
                 continue
-        raise ValueError("No visible DOWNLOAD HERE GoFile link was found.")
+            if filecrypt_source is None:
+                filecrypt_source = FileCryptSource(url=validated)
+        if filecrypt_source is not None:
+            return filecrypt_source
+        raise ValueError(
+            "No visible DOWNLOAD HERE GoFile or FileCrypt link was found."
+        )
+
+    @staticmethod
+    def _find_download_content_id(html: str) -> str:
+        source = OwnedHtmlCatalogProvider._find_download_source(html)
+        if not isinstance(source, GoFileSource):
+            raise ValueError("The visible DOWNLOAD HERE link is a FileCrypt container.")
+        return source.content_id
 
 
 def _is_hidden(tag: Tag) -> bool:

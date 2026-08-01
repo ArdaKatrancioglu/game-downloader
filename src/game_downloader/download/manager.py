@@ -140,6 +140,7 @@ class DownloadManager:
                         part,
                         resolved.size,
                         str(resolved.referer) if resolved.referer else None,
+                        resolved.require_attachment,
                         progress,
                         notice,
                     )
@@ -169,6 +170,7 @@ class DownloadManager:
         part: Path,
         expected_size: int | None,
         referer: str | None,
+        require_attachment: bool,
         progress: ProgressCallback | None,
         notice: NoticeCallback | None,
     ) -> None:
@@ -182,6 +184,11 @@ class DownloadManager:
                 return
             if response.status_code not in {200, 206}:
                 raise DownloadError(f"The download server returned HTTP {response.status_code}.")
+            disposition = response.headers.get("content-disposition", "")
+            if require_attachment and not disposition.casefold().startswith("attachment"):
+                raise DownloadError(
+                    "The download server did not return an attachment response."
+                )
             if existing and response.status_code != 206:
                 existing = 0
                 if notice:
@@ -212,6 +219,11 @@ class DownloadManager:
                         await _call(progress, tracker.update(downloaded, total))
                 output.flush()
                 os.fsync(output.fileno())
+            if total is not None and downloaded != total:
+                raise DownloadError(
+                    f"Size validation failed: expected {total} bytes, "
+                    f"received {downloaded}."
+                )
         finally:
             await response.aclose()
 

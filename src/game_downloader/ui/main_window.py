@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -26,22 +27,22 @@ from PySide6.QtWidgets import (
 )
 
 from game_downloader.archive.extractor import ArchiveExtractor
-from game_downloader.catalog.json_provider import LocalJsonCatalogProvider
-from game_downloader.catalog.owned_html_provider import OwnedHtmlCatalogProvider
-from game_downloader.download.manager import DownloadManager
 from game_downloader.models import (
+    DownloadProgress,
     ExtractionLimits,
+    FuckingFastSource,
     GameEntry,
     GameRelease,
 )
 from game_downloader.settings import AppSettings, SettingsRepository
-from game_downloader.storage.gofile_browser_download import GoFileBrowserDownload
+from game_downloader.storage.fuckingfast_download import FuckingFastDownloader
 from game_downloader.ui.settings_dialog import SettingsDialog
 from game_downloader.ui.theme import load_theme
 from game_downloader.ui.workers import (
     CoroutineWorker,
-    GoFileBrowserWorker,
+    FuckingFastWorker,
 )
+from game_downloader.web_search import InternetSearchProvider
 
 
 class MainWindow(QMainWindow):
@@ -56,9 +57,10 @@ class MainWindow(QMainWindow):
         self.entries: list[GameEntry] = []
         self.current_release: GameRelease | None = None
         self.downloaded_path: Path | None = None
+        self.downloaded_paths: list[Path] = []
         self.extracted_path: Path | None = None
         self.active_provider = None
-        self.workers: set[CoroutineWorker | GoFileBrowserWorker] = set()
+        self.workers: set[CoroutineWorker | FuckingFastWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
         self.setWindowTitle("Oyun İndirici")
         self.setMinimumSize(940, 720)
@@ -168,6 +170,7 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         self.extract_button = QPushButton("Tekrar çıkar")
         self.extract_button.setEnabled(False)
+        self.extract_button.setVisible(False)
         self.extract_button.clicked.connect(self._extract)
         self.open_folder_button = QPushButton("Klasörü aç")
         self.open_folder_button.setEnabled(False)
@@ -181,17 +184,17 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
     def _provider(self):
-        if self.settings.catalog_url:
-            host = urlsplit(self.settings.catalog_url).hostname
-            allowed = self.settings.allowed_catalog_domains
-            if not allowed and host:
-                allowed = [host]
-            return OwnedHtmlCatalogProvider(self.settings.catalog_url, allowed)
-        return LocalJsonCatalogProvider(self.settings.catalog_file)
+        if not self.settings.web_search_url:
+            raise ValueError("Ayarlar bölümünde web arama adresini belirtin.")
+        host = urlsplit(self.settings.web_search_url).hostname
+        if not host:
+            raise ValueError("Ayarlar bölümünde geçerli bir web arama adresi belirtin.")
+        allowed = self.settings.allowed_search_domains or [host]
+        return InternetSearchProvider(self.settings.web_search_url, allowed)
 
     def _start_worker(
         self,
-        worker: CoroutineWorker | GoFileBrowserWorker,
+        worker: CoroutineWorker | FuckingFastWorker,
     ) -> None:
         self.workers.add(worker)
         worker.finished.connect(lambda: self.workers.discard(worker))
@@ -205,7 +208,11 @@ class MainWindow(QMainWindow):
             return
         self.search_button.setEnabled(False)
         self.status.setText("Aranıyor…")
-        self.active_provider = self._provider()
+        try:
+            self.active_provider = self._provider()
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
         worker = CoroutineWorker(lambda: self.active_provider.search(query))
         worker.succeeded.connect(self._show_results)
         worker.failed.connect(self._show_error)
@@ -217,16 +224,15 @@ class MainWindow(QMainWindow):
         self.results.setEnabled(True)
         self.results.clear()
         for entry in self.entries:
-            size = _format_bytes(entry.archive_size)
             self.results.addItem(
                 QListWidgetItem(
-                    f"{entry.title}  •  {entry.version}  •  {size}"
+                    f"{entry.title}\n{entry.detail_url}"
                 )
             )
         self.select_button.setEnabled(bool(self.entries))
         if self.entries:
             self.results.setCurrentRow(0)
-        self.status.setText(f"{len(self.entries)} sonuç")
+        self.status.setText(f"Web aramasından {len(self.entries)} sonuç")
 
     def _select_result(self) -> None:
         row = self.results.currentRow()
@@ -256,7 +262,11 @@ class MainWindow(QMainWindow):
         )
         self.size_label.setText(_format_bytes(self.current_release.archive_size))
         self._update_space()
-        self.status.setText("İndirme başlatılıyor…")
+        if not isinstance(self.current_release.source, FuckingFastSource):
+            self._prepare_failed("Seçilen sonuçta FuckingFast part bağlantısı yok.")
+            return
+        self.size_label.setText(f"{len(self.current_release.source.parts)} part")
+        self.status.setText("Sıralı indirme başlatılıyor…")
         self._download()
 
     def _prepare_failed(self, message: str) -> None:
@@ -281,63 +291,58 @@ class MainWindow(QMainWindow):
         self.space_label.setText(f"Boş alan: {_format_bytes(free)}")
 
     def _download(self) -> None:
-        if self.current_release is None:
+        if (
+            self.current_release is None
+            or not isinstance(self.current_release.source, FuckingFastSource)
+        ):
             return
+        self.downloaded_path = None
+        self.downloaded_paths = []
         self.extracted_path = None
         self.open_folder_button.setEnabled(False)
         self.extract_button.setEnabled(False)
         folder = Path(self.destination.text()).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
-        expected_size = self.current_release.archive_size
-        if not DownloadManager.has_recommended_space(folder, expected_size):
-            answer = QMessageBox.warning(
-                self,
-                "Disk alanı az",
-                "Boş alan önerilen miktarın altında. Devam edilsin mi?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                self.search_button.setEnabled(True)
-                self.select_button.setEnabled(True)
-                self.results.setEnabled(True)
-                return
-        if not self.settings.gofile_browser_download_enabled:
-            self._show_error(
-                "Ayarlar bölümünden GoFile tarayıcı indirmelerini etkinleştir."
-            )
-            self.search_button.setEnabled(True)
-            self.select_button.setEnabled(True)
-            self.results.setEnabled(True)
-            return
-        profile_dir = self.repository.path.parent / "browser-profile" / "gofile"
-        browser_download = GoFileBrowserDownload(
-            enabled=True,
-            remember_session=self.settings.remember_gofile_browser_session,
-            profile_dir=profile_dir,
-        )
-        worker = GoFileBrowserWorker(
-            browser_download,
-            self.current_release.source.content_id,
+        worker = FuckingFastWorker(
+            FuckingFastDownloader(),
+            self.current_release.source,
             folder,
         )
         worker.notice.connect(self.status.setText)
+        worker.progress.connect(self._download_progress)
         worker.succeeded.connect(self._download_finished)
         worker.failed.connect(self._download_failed)
-        self.progress.setRange(0, 0)
-        self.status.setText("GoFile açılıyor…")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.status.setText("İlk FuckingFast part’ı hazırlanıyor…")
         self._start_worker(worker)
 
     def _download_finished(self, value: object) -> None:
-        self.downloaded_path = Path(value)
-        self.archive_label.setText(self.downloaded_path.name)
-        try:
-            self.size_label.setText(_format_bytes(self.downloaded_path.stat().st_size))
-        except OSError:
-            self.size_label.setText("Bilinmiyor")
+        self.downloaded_paths = [Path(path) for path in value]
+        self.downloaded_path = self.downloaded_paths[0] if self.downloaded_paths else None
+        total_size = 0
+        for path in self.downloaded_paths:
+            with suppress(OSError):
+                total_size += path.stat().st_size
+        self.archive_label.setText(f"{len(self.downloaded_paths)} part indirildi")
+        self.size_label.setText(_format_bytes(total_size))
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
-        self.status.setText("Arşiv çıkarılıyor…")
-        self._start_extraction()
+        self.search_button.setEnabled(True)
+        self.select_button.setEnabled(True)
+        self.results.setEnabled(True)
+        self.open_folder_button.setEnabled(bool(self.downloaded_paths))
+        self.status.setText(
+            f"Tamamlandı: {len(self.downloaded_paths)} part indirildi ve doğrulandı"
+        )
+
+    def _download_progress(self, value: object) -> None:
+        progress = DownloadProgress.model_validate(value)
+        if progress.percent is None:
+            self.progress.setRange(0, 0)
+            return
+        self.progress.setRange(0, 100)
+        self.progress.setValue(max(0, min(100, round(progress.percent))))
 
     def _download_failed(self, message: str) -> None:
         self.progress.setRange(0, 100)
@@ -390,6 +395,10 @@ class MainWindow(QMainWindow):
     def _open_extracted_folder(self) -> None:
         if self.extracted_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.extracted_path)))
+        elif self.downloaded_paths:
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(self.downloaded_paths[0].parent))
+            )
 
     def _open_logs(self) -> None:
         self.repository.path.parent.mkdir(parents=True, exist_ok=True)

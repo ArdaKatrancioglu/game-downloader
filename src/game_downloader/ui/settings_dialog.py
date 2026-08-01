@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -25,15 +24,8 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Ayarlar")
         self.settings = settings
 
-        self.catalog_url = QLineEdit(settings.catalog_url or "")
-        self.catalog_file = QLineEdit(str(settings.catalog_file))
-        catalog_browse = QPushButton("Gözat")
-        catalog_browse.clicked.connect(self._browse_catalog)
-        catalog_row = QHBoxLayout()
-        catalog_row.addWidget(self.catalog_file)
-        catalog_row.addWidget(catalog_browse)
-
-        self.allowed_domains = QLineEdit(", ".join(settings.allowed_catalog_domains))
+        self.web_search_url = QLineEdit(settings.web_search_url or "")
+        self.allowed_domains = QLineEdit(", ".join(settings.allowed_search_domains))
         self.download_folder = QLineEdit(str(settings.default_download_folder))
         folder_browse = QPushButton("Gözat")
         folder_browse.clicked.connect(self._browse_folder)
@@ -44,24 +36,11 @@ class SettingsDialog(QDialog):
         self.max_size = QSpinBox()
         self.max_size.setRange(1, 10_000)
         self.max_size.setValue(max(1, settings.max_extracted_archive_size // 1024**3))
-        self.browser_fallback = QCheckBox(
-            "GoFile indirmelerini tarayıcıyla yap"
-        )
-        self.browser_fallback.setChecked(settings.gofile_browser_download_enabled)
-        self.remember_browser = QCheckBox(
-            "Tarayıcı oturumunu hatırla"
-        )
-        self.remember_browser.setChecked(settings.remember_gofile_browser_session)
-        self.remember_browser.setEnabled(self.browser_fallback.isChecked())
-        self.browser_fallback.toggled.connect(self.remember_browser.setEnabled)
         form = QFormLayout()
-        form.addRow("Katalog adresi", self.catalog_url)
-        form.addRow("Yerel katalog", catalog_row)
-        form.addRow("İzin verilen alan adları", self.allowed_domains)
+        form.addRow("Web arama adresi", self.web_search_url)
+        form.addRow("İzin verilen site alan adları", self.allowed_domains)
         form.addRow("İndirme klasörü", folder_row)
         form.addRow("Maksimum çıkarma (GiB)", self.max_size)
-        form.addRow("", self.browser_fallback)
-        form.addRow("", self.remember_browser)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -74,15 +53,6 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
-    def _browse_catalog(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Katalog seç",
-            filter="JSON (*.json)",
-        )
-        if path:
-            self.catalog_file.setText(path)
-
     def _browse_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "İndirme klasörü")
         if path:
@@ -93,17 +63,14 @@ class SettingsDialog(QDialog):
 
         updated = self.settings.model_copy(
             update={
-                "catalog_url": self.catalog_url.text().strip() or None,
-                "catalog_file": Path(self.catalog_file.text()).expanduser(),
-                "allowed_catalog_domains": [
+                "web_search_url": self.web_search_url.text().strip() or None,
+                "allowed_search_domains": [
                     value.strip()
                     for value in self.allowed_domains.text().split(",")
                     if value.strip()
                 ],
                 "default_download_folder": Path(self.download_folder.text()).expanduser(),
                 "max_extracted_archive_size": self.max_size.value() * 1024**3,
-                "gofile_browser_download_enabled": self.browser_fallback.isChecked(),
-                "remember_gofile_browser_session": self.remember_browser.isChecked(),
             }
         )
         self.settings_saved.emit(updated)

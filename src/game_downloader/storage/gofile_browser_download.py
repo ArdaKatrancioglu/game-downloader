@@ -21,7 +21,7 @@ class GoFileBrowserDownloadError(RuntimeError):
 
 
 class GoFileBrowserDownload:
-    """API-free, visible browser download for an authorized public GoFile share."""
+    """API-free browser download for an authorized public GoFile share."""
 
     def __init__(
         self,
@@ -29,12 +29,14 @@ class GoFileBrowserDownload:
         enabled: bool = False,
         remember_session: bool = True,
         profile_dir: Path | None = None,
+        headless: bool = True,
         timeout_seconds: float = 300.0,
         failure_hold_seconds: float = 15.0,
     ) -> None:
         self.enabled = enabled
         self.remember_session = remember_session
         self.profile_dir = profile_dir
+        self.headless = headless
         self.timeout_seconds = timeout_seconds
         self.failure_hold_seconds = failure_hold_seconds
 
@@ -76,10 +78,11 @@ class GoFileBrowserDownload:
 
         share_url = f"https://{GOFILE_HOST}/d/{content_id}"
         logger.info(
-            "Starting visible API-free GoFile download share_url=%s "
-            "remember_session=%s profile=%s",
+            "Starting API-free GoFile download share_url=%s "
+            "remember_session=%s headless=%s profile=%s",
             share_url,
             self.remember_session,
+            self.headless,
             profile if self.remember_session else "<temporary>",
         )
         _notify(notice, "GoFile açılıyor…")
@@ -88,7 +91,7 @@ class GoFileBrowserDownload:
                 try:
                     context = await playwright.chromium.launch_persistent_context(
                         str(profile),
-                        headless=False,
+                        headless=self.headless,
                         accept_downloads=True,
                     )
                 except Exception as exc:
@@ -137,7 +140,7 @@ class GoFileBrowserDownload:
                     _validate_share_page(page.url, content_id)
                     _notify(notice, "İndirme düğmesi bulunuyor…")
                     logger.info(
-                        "Visible GoFile page opened url=%s title=%r",
+                        "GoFile page opened url=%s title=%r",
                         safe_url(page.url),
                         (await page.title())[:200],
                     )
@@ -148,7 +151,7 @@ class GoFileBrowserDownload:
                     )
                     logger.info(
                         "Exactly one visible GoFile button.item_download found; "
-                        "clicking it in the visible browser."
+                        "clicking it in Chromium."
                     )
                     _notify(notice, "İndirme başlatılıyor…")
                     try:
@@ -200,7 +203,7 @@ class GoFileBrowserDownload:
                     return final_path
                 except Exception as exc:
                     logger.exception(
-                        "Visible GoFile browser download failed error_type=%s "
+                        "GoFile browser download failed error_type=%s "
                         "error=%s hold_seconds=%.1f",
                         type(exc).__name__,
                         exc,
