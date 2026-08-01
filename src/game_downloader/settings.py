@@ -19,7 +19,8 @@ class AppSettings(BaseSettings):
     web_search_url: str | None = None
     allowed_search_domains: list[str] = Field(default_factory=list)
     default_download_folder: Path = Path.home() / "Downloads"
-    fuckingfast_part_delay_seconds: float = Field(default=3.0, ge=0, le=60)
+    fuckingfast_part_delay_min_seconds: float = Field(default=15.0, ge=0, le=300)
+    fuckingfast_part_delay_max_seconds: float = Field(default=30.0, ge=0, le=300)
     max_extracted_archive_size: int = 50 * 1024**3
     max_extracted_file_count: int = 100_000
     log_level: str = "INFO"
@@ -38,6 +39,12 @@ class AppSettings(BaseSettings):
         ):
             migrated["allowed_search_domains"] = migrated["allowed_catalog_domains"]
         return migrated
+
+    @model_validator(mode="after")
+    def part_delay_range_is_valid(self) -> AppSettings:
+        if self.fuckingfast_part_delay_min_seconds > self.fuckingfast_part_delay_max_seconds:
+            raise ValueError("Part bekleme minimumu maksimumdan büyük olamaz.")
+        return self
 
 
 class SettingsRepository:

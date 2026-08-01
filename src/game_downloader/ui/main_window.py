@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -28,11 +30,11 @@ from PySide6.QtWidgets import (
 
 from game_downloader.archive.extractor import ArchiveExtractor
 from game_downloader.models import (
-    DownloadProgress,
     ExtractionLimits,
     FuckingFastSource,
     GameEntry,
     GameRelease,
+    MultipartDownloadProgress,
 )
 from game_downloader.settings import AppSettings, SettingsRepository
 from game_downloader.storage.fuckingfast_download import FuckingFastDownloader
@@ -60,6 +62,7 @@ class MainWindow(QMainWindow):
         self.downloaded_paths: list[Path] = []
         self.extracted_path: Path | None = None
         self.active_provider = None
+        self.active_download_worker: FuckingFastWorker | None = None
         self.workers: set[CoroutineWorker | FuckingFastWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
         self.setWindowTitle("Oyun İndirici")
@@ -162,8 +165,16 @@ class MainWindow(QMainWindow):
         activity_title = QLabel("Durum")
         activity_title.setObjectName("sectionTitle")
         layout.addWidget(activity_title)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
+        self.part_progress_label = QLabel("Part: —")
+        self.part_progress_label.setObjectName("mutedLabel")
+        self.part_progress = QProgressBar()
+        self.part_progress.setRange(0, 100)
+        self.total_progress_label = QLabel("Toplam: —")
+        self.total_progress_label.setObjectName("mutedLabel")
+        self.total_progress = QProgressBar()
+        self.total_progress.setRange(0, 100)
+        self.transfer_label = QLabel("Hız: — · Part ETA: — · Toplam ETA: —")
+        self.transfer_label.setObjectName("mutedLabel")
         self.status = QLabel("Hazır")
         self.status.setObjectName("statusText")
         self.status.setWordWrap(True)
@@ -175,10 +186,33 @@ class MainWindow(QMainWindow):
         self.open_folder_button = QPushButton("Klasörü aç")
         self.open_folder_button.setEnabled(False)
         self.open_folder_button.clicked.connect(self._open_extracted_folder)
+        self.limit_speed_checkbox = QCheckBox("İndirme hızını sınırla")
+        self.limit_speed_spin = QDoubleSpinBox()
+        self.limit_speed_spin.setRange(0.1, 10_000)
+        self.limit_speed_spin.setValue(20.0)
+        self.limit_speed_spin.setDecimals(1)
+        self.limit_speed_spin.setSuffix(" Mbit/sn")
+        self.limit_speed_spin.setEnabled(False)
+        self.limit_speed_checkbox.toggled.connect(self.limit_speed_spin.setEnabled)
+        self.pause_button = QPushButton("Duraklat")
+        self.pause_button.setEnabled(False)
+        self.pause_button.clicked.connect(self._toggle_pause)
+        self.cancel_button = QPushButton("İptal et")
+        self.cancel_button.setObjectName("dangerButton")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self._confirm_cancel_download)
+        controls.addWidget(self.limit_speed_checkbox)
+        controls.addWidget(self.limit_speed_spin)
         controls.addStretch()
         controls.addWidget(self.extract_button)
         controls.addWidget(self.open_folder_button)
-        layout.addWidget(self.progress)
+        controls.addWidget(self.pause_button)
+        controls.addWidget(self.cancel_button)
+        layout.addWidget(self.part_progress_label)
+        layout.addWidget(self.part_progress)
+        layout.addWidget(self.total_progress_label)
+        layout.addWidget(self.total_progress)
+        layout.addWidget(self.transfer_label)
         layout.addWidget(self.status)
         layout.addLayout(controls)
         self.setCentralWidget(root)
@@ -303,19 +337,37 @@ class MainWindow(QMainWindow):
         self.extract_button.setEnabled(False)
         folder = Path(self.destination.text()).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
+        max_bytes_per_second = None
+        if self.limit_speed_checkbox.isChecked():
+            max_bytes_per_second = round(self.limit_speed_spin.value() * 1_000_000 / 8)
         worker = FuckingFastWorker(
             FuckingFastDownloader(
-                part_delay_seconds=self.settings.fuckingfast_part_delay_seconds,
+                part_delay_min_seconds=self.settings.fuckingfast_part_delay_min_seconds,
+                part_delay_max_seconds=self.settings.fuckingfast_part_delay_max_seconds,
+                max_bytes_per_second=max_bytes_per_second,
             ),
             self.current_release.source,
             folder,
         )
+        self.active_download_worker = worker
         worker.notice.connect(self.status.setText)
         worker.progress.connect(self._download_progress)
         worker.succeeded.connect(self._download_finished)
+        worker.cancelled.connect(self._download_cancelled)
         worker.failed.connect(self._download_failed)
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
+        self.part_progress.setRange(0, 100)
+        self.part_progress.setValue(0)
+        self.total_progress.setRange(0, 100)
+        self.total_progress.setValue(0)
+        self.part_progress_label.setText("Part: hazırlanıyor…")
+        self.total_progress_label.setText("Toplam: hesaplanıyor…")
+        self.transfer_label.setText("Hız: — · Part ETA: — · Toplam ETA: —")
+        self.limit_speed_checkbox.setEnabled(False)
+        self.limit_speed_spin.setEnabled(False)
+        self.pause_button.setEnabled(True)
+        self.pause_button.setText("Duraklat")
+        self.pause_button.setProperty("paused", False)
+        self.cancel_button.setEnabled(True)
         self.status.setText("İlk FuckingFast part’ı hazırlanıyor…")
         self._start_worker(worker)
 
@@ -328,30 +380,113 @@ class MainWindow(QMainWindow):
                 total_size += path.stat().st_size
         self.archive_label.setText(f"{len(self.downloaded_paths)} part indirildi")
         self.size_label.setText(_format_bytes(total_size))
-        self.progress.setRange(0, 100)
-        self.progress.setValue(100)
-        self.search_button.setEnabled(True)
-        self.select_button.setEnabled(True)
-        self.results.setEnabled(True)
+        self.part_progress.setRange(0, 100)
+        self.part_progress.setValue(100)
+        self.total_progress.setRange(0, 100)
+        self.total_progress.setValue(100)
+        self.part_progress_label.setText("Part: tamamlandı")
+        self.total_progress_label.setText(
+            f"Toplam: {_format_bytes(total_size)} / {_format_bytes(total_size)} (%100)"
+        )
+        self.transfer_label.setText("Hız: — · Part ETA: 0 sn · Toplam ETA: 0 sn")
+        self._finish_download_controls()
         self.open_folder_button.setEnabled(bool(self.downloaded_paths))
         self.status.setText(
             f"Tamamlandı: {len(self.downloaded_paths)} part indirildi ve doğrulandı"
         )
 
     def _download_progress(self, value: object) -> None:
-        progress = DownloadProgress.model_validate(value)
-        if progress.percent is None:
-            self.progress.setRange(0, 0)
-            return
-        self.progress.setRange(0, 100)
-        self.progress.setValue(max(0, min(100, round(progress.percent))))
+        progress = MultipartDownloadProgress.model_validate(value)
+        part = progress.part
+        part_total = _format_bytes(part.total)
+        part_percent = "—" if part.percent is None else f"%{part.percent:.1f}"
+        self.part_progress_label.setText(
+            f"Part {progress.part_index}/{progress.part_count}: "
+            f"{_format_bytes(part.downloaded)} / {part_total} ({part_percent})"
+        )
+        _set_progress_bar(self.part_progress, part.percent)
+        if progress.estimated_total_bytes is None or progress.total_percent is None:
+            self.total_progress_label.setText(
+                f"Toplam: {_format_bytes(progress.completed_bytes + part.downloaded)} / "
+                "hesaplanıyor…"
+            )
+            self.total_progress.setRange(0, 0)
+        else:
+            prefix = "≈ " if progress.total_is_estimate else ""
+            self.total_progress_label.setText(
+                f"Toplam: {_format_bytes(progress.completed_bytes + part.downloaded)} / "
+                f"{prefix}{_format_bytes(progress.estimated_total_bytes)} "
+                f"(%{progress.total_percent:.1f})"
+            )
+            _set_progress_bar(self.total_progress, progress.total_percent)
+        self.transfer_label.setText(
+            f"Hız: {_format_speed(part.bytes_per_second)} · "
+            f"Part ETA: {_format_duration(part.eta_seconds)} · "
+            f"Toplam ETA: {_format_duration(progress.total_eta_seconds)}"
+        )
 
     def _download_failed(self, message: str) -> None:
-        self.progress.setRange(0, 100)
-        self.search_button.setEnabled(True)
-        self.select_button.setEnabled(True)
-        self.results.setEnabled(True)
+        self.part_progress.setRange(0, 100)
+        self.total_progress.setRange(0, 100)
+        self._finish_download_controls()
         self._show_error(message)
+
+    def _download_cancelled(self, message: str) -> None:
+        self.part_progress.setRange(0, 100)
+        self.total_progress.setRange(0, 100)
+        self._finish_download_controls()
+        self.status.setText(message)
+
+    def _finish_download_controls(self) -> None:
+        self.active_download_worker = None
+        self.search_button.setEnabled(True)
+        self.select_button.setEnabled(self.results.currentRow() >= 0)
+        self.results.setEnabled(True)
+        self.limit_speed_checkbox.setEnabled(True)
+        self.limit_speed_spin.setEnabled(self.limit_speed_checkbox.isChecked())
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("Duraklat")
+        self.cancel_button.setEnabled(False)
+
+    def _toggle_pause(self) -> None:
+        worker = self.active_download_worker
+        if worker is None:
+            return
+        if self.pause_button.property("paused"):
+            worker.resume_download()
+            self.pause_button.setText("Duraklat")
+            self.pause_button.setProperty("paused", False)
+            self.status.setText("İndirme devam ediyor…")
+        else:
+            worker.pause_download()
+            self.pause_button.setText("Devam et")
+            self.pause_button.setProperty("paused", True)
+            self.status.setText("İndirme duraklatıldı")
+
+    def _confirm_cancel_download(self) -> None:
+        worker = self.active_download_worker
+        if worker is None:
+            return
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("İndirmeyi iptal et")
+        dialog.setText("İndirme iptal edilsin mi?")
+        dialog.setInformativeText("Devam eden part durur; işlem geri alınamaz.")
+        delete_parts = QCheckBox("İndirilmiş partları sil")
+        delete_parts.setChecked(True)
+        dialog.setCheckBox(delete_parts)
+        confirm = dialog.addButton("İndirmeyi iptal et", QMessageBox.ButtonRole.DestructiveRole)
+        dialog.addButton(QMessageBox.StandardButton.No)
+        dialog.exec()
+        if dialog.clickedButton() is not confirm:
+            return
+        worker.cancel_download(delete_completed=delete_parts.isChecked())
+        self.pause_button.setEnabled(False)
+        self.cancel_button.setEnabled(False)
+        if delete_parts.isChecked():
+            self.status.setText("İndirme iptal ediliyor; tamamlanmış partlar silinecek…")
+        else:
+            self.status.setText("İndirme iptal ediliyor; tamamlanmış partlar korunacak…")
 
     def _extract(self) -> None:
         self._start_extraction()
@@ -433,6 +568,33 @@ def _format_bytes(value: int | None) -> str:
             return f"{amount:.1f} {unit}"
         amount /= 1024
     return "Bilinmiyor"
+
+
+def _format_speed(bytes_per_second: float) -> str:
+    if bytes_per_second <= 0:
+        return "—"
+    return f"{_format_bytes(round(bytes_per_second))}/sn"
+
+
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "hesaplanıyor…"
+    total = max(0, round(seconds))
+    hours, remaining = divmod(total, 3600)
+    minutes, seconds = divmod(remaining, 60)
+    if hours:
+        return f"{hours} sa {minutes:02d} dk"
+    if minutes:
+        return f"{minutes} dk {seconds:02d} sn"
+    return f"{seconds} sn"
+
+
+def _set_progress_bar(bar: QProgressBar, percent: float | None) -> None:
+    if percent is None:
+        bar.setRange(0, 0)
+        return
+    bar.setRange(0, 100)
+    bar.setValue(max(0, min(100, round(percent))))
 
 
 def _available_extraction_destination(archive: Path) -> Path:

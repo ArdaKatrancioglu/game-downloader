@@ -168,6 +168,15 @@ QPushButton#primaryButton:disabled {
 QPushButton#quietButton {
     background: transparent;
 }
+QPushButton#dangerButton {
+    color: #fff4f4;
+    background: #b5383d;
+    border-color: #e15b61;
+}
+QPushButton#dangerButton:hover {
+    background: #ca454b;
+    border-color: #f17176;
+}
 QProgressBar {
     min-height: 10px;
     max-height: 10px;
@@ -187,7 +196,7 @@ QDialog {
 QFormLayout QLabel, QCheckBox {
     color: @text@;
 }
-QSpinBox {
+QSpinBox, QDoubleSpinBox {
     min-height: 36px;
     padding: 0 8px;
     color: @text@;

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -36,15 +37,20 @@ class SettingsDialog(QDialog):
         self.max_size = QSpinBox()
         self.max_size.setRange(1, 10_000)
         self.max_size.setValue(max(1, settings.max_extracted_archive_size // 1024**3))
-        self.part_delay = QSpinBox()
-        self.part_delay.setRange(0, 60)
-        self.part_delay.setSuffix(" sn")
-        self.part_delay.setValue(round(settings.fuckingfast_part_delay_seconds))
+        self.part_delay_min = QSpinBox()
+        self.part_delay_min.setRange(0, 300)
+        self.part_delay_min.setSuffix(" sn")
+        self.part_delay_min.setValue(round(settings.fuckingfast_part_delay_min_seconds))
+        self.part_delay_max = QSpinBox()
+        self.part_delay_max.setRange(0, 300)
+        self.part_delay_max.setSuffix(" sn")
+        self.part_delay_max.setValue(round(settings.fuckingfast_part_delay_max_seconds))
         form = QFormLayout()
         form.addRow("Web arama adresi", self.web_search_url)
         form.addRow("İzin verilen site alan adları", self.allowed_domains)
         form.addRow("İndirme klasörü", folder_row)
-        form.addRow("Part arası bekleme", self.part_delay)
+        form.addRow("Part arası bekleme (min)", self.part_delay_min)
+        form.addRow("Part arası bekleme (max)", self.part_delay_max)
         form.addRow("Maksimum çıkarma (GiB)", self.max_size)
 
         buttons = QDialogButtonBox(
@@ -66,6 +72,14 @@ class SettingsDialog(QDialog):
     def _save_settings(self) -> None:
         from pathlib import Path
 
+        if self.part_delay_min.value() > self.part_delay_max.value():
+            QMessageBox.warning(
+                self,
+                "Geçersiz bekleme aralığı",
+                "Minimum bekleme, maksimum beklemeden büyük olamaz.",
+            )
+            return
+
         updated = self.settings.model_copy(
             update={
                 "web_search_url": self.web_search_url.text().strip() or None,
@@ -75,7 +89,8 @@ class SettingsDialog(QDialog):
                     if value.strip()
                 ],
                 "default_download_folder": Path(self.download_folder.text()).expanduser(),
-                "fuckingfast_part_delay_seconds": float(self.part_delay.value()),
+                "fuckingfast_part_delay_min_seconds": float(self.part_delay_min.value()),
+                "fuckingfast_part_delay_max_seconds": float(self.part_delay_max.value()),
                 "max_extracted_archive_size": self.max_size.value() * 1024**3,
             }
         )

@@ -54,15 +54,20 @@ class DownloadManager:
         max_attempts: int = 3,
         chunk_size: int = 256 * 1024,
         resolve_hosts: bool = True,
+        max_bytes_per_second: int | None = None,
     ) -> None:
+        if max_bytes_per_second is not None and max_bytes_per_second <= 0:
+            raise ValueError("max_bytes_per_second must be positive when set")
         self._client = client
         self.max_redirects = max_redirects
         self.max_attempts = max_attempts
         self.chunk_size = chunk_size
         self.resolve_hosts = resolve_hosts
+        self.max_bytes_per_second = max_bytes_per_second
         self._pause = asyncio.Event()
         self._pause.set()
         self._cancel = asyncio.Event()
+        self._rate_limiter = _RateLimiter(max_bytes_per_second)
 
     def pause(self) -> None:
         self._pause.clear()
@@ -215,6 +220,10 @@ class DownloadManager:
                     downloaded += len(chunk)
                     if expected_size is not None and downloaded > expected_size:
                         raise DownloadError("The server sent more data than expected.")
+                    await self._rate_limiter.limit(
+                        len(chunk),
+                        cancelled=self._cancel,
+                    )
                     if progress:
                         await _call(progress, tracker.update(downloaded, total))
                 output.flush()
@@ -345,6 +354,28 @@ async def _call(callback: Callable, value: object) -> None:
     result = callback(value)
     if asyncio.iscoroutine(result):
         await result
+
+
+class _RateLimiter:
+    def __init__(self, max_bytes_per_second: int | None) -> None:
+        self.max_bytes_per_second = max_bytes_per_second
+        self._started_at: float | None = None
+        self._transferred = 0
+
+    async def limit(self, amount: int, *, cancelled: asyncio.Event) -> None:
+        if self.max_bytes_per_second is None:
+            return
+        loop = asyncio.get_running_loop()
+        if self._started_at is None:
+            self._started_at = loop.time()
+        self._transferred += amount
+        target_elapsed = self._transferred / self.max_bytes_per_second
+        remaining = target_elapsed - (loop.time() - self._started_at)
+        while remaining > 0:
+            if cancelled.is_set():
+                raise DownloadCancelled("Download cancelled. The partial file was kept for resume.")
+            await asyncio.sleep(min(remaining, 0.25))
+            remaining = target_elapsed - (loop.time() - self._started_at)
 
 
 async def cleanup_lock_registry() -> None:

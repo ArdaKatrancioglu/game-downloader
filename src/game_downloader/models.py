@@ -112,6 +112,18 @@ class DownloadProgress(BaseModel):
     eta_seconds: float | None
 
 
+class MultipartDownloadProgress(BaseModel):
+    part_index: int = Field(ge=1)
+    part_count: int = Field(ge=1)
+    part_filename: str
+    part: DownloadProgress
+    completed_bytes: int = Field(ge=0)
+    estimated_total_bytes: int | None = Field(default=None, ge=0)
+    total_percent: float | None = None
+    total_eta_seconds: float | None = Field(default=None, ge=0)
+    total_is_estimate: bool = True
+
+
 class ExtractionLimits(BaseModel):
     max_total_size: int = Field(default=50 * 1024**3, gt=0)
     max_files: int = Field(default=100_000, gt=0)

@@ -19,6 +19,11 @@ def resolved(size=6, checksum=None, referer=None):
     )
 
 
+def test_speed_limit_must_be_positive():
+    with pytest.raises(ValueError, match="positive"):
+        DownloadManager(max_bytes_per_second=0)
+
+
 @pytest.mark.asyncio
 async def test_streams_to_part_then_atomically_finishes(tmp_path):
     data = b"abcdef"
