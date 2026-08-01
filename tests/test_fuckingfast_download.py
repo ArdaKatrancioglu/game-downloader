@@ -118,6 +118,24 @@ def test_invalid_part_delay_range_is_rejected():
         FuckingFastDownloader(part_delay_min_seconds=30, part_delay_max_seconds=15)
 
 
+def test_speed_limit_update_is_forwarded_to_active_manager():
+    downloader = FuckingFastDownloader(max_bytes_per_second=None)
+
+    class ManagerStub:
+        def set_speed_limit(self, value):
+            self.value = value
+
+    manager = ManagerStub()
+    downloader._manager = manager
+
+    downloader.set_speed_limit(250_000)
+    assert downloader.max_bytes_per_second == 250_000
+    assert manager.value == 250_000
+
+    downloader.set_speed_limit(None)
+    assert manager.value is None
+
+
 @pytest.mark.asyncio
 async def test_cancellation_can_remove_completed_parts(tmp_path: Path):
     downloader: FuckingFastDownloader

@@ -85,6 +85,9 @@ QFrame.card, QGroupBox {
     border: 1px solid @border@;
     border-radius: 14px;
 }
+QFrame.card:hover {
+    border-color: @border_focus@;
+}
 QGroupBox {
     margin-top: 12px;
     padding: 18px 16px 14px 16px;

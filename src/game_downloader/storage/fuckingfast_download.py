@@ -87,6 +87,13 @@ class FuckingFastDownloader:
         if self._manager:
             self._manager.cancel()
 
+    def set_speed_limit(self, max_bytes_per_second: int | None) -> None:
+        if max_bytes_per_second is not None and max_bytes_per_second <= 0:
+            raise ValueError("İndirme hızı limiti pozitif olmalıdır.")
+        self.max_bytes_per_second = max_bytes_per_second
+        if self._manager:
+            self._manager.set_speed_limit(max_bytes_per_second)
+
     async def download(
         self,
         source: FuckingFastSource,

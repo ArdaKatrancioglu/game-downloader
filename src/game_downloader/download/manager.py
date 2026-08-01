@@ -79,6 +79,12 @@ class DownloadManager:
         self._cancel.set()
         self._pause.set()
 
+    def set_speed_limit(self, max_bytes_per_second: int | None) -> None:
+        if max_bytes_per_second is not None and max_bytes_per_second <= 0:
+            raise ValueError("max_bytes_per_second must be positive when set")
+        self.max_bytes_per_second = max_bytes_per_second
+        self._rate_limiter.set_limit(max_bytes_per_second)
+
     @staticmethod
     def has_recommended_space(folder: Path, expected_size: int | None) -> bool:
         if expected_size is None:
@@ -362,6 +368,11 @@ class _RateLimiter:
         self._started_at: float | None = None
         self._transferred = 0
 
+    def set_limit(self, max_bytes_per_second: int | None) -> None:
+        self.max_bytes_per_second = max_bytes_per_second
+        self._started_at = None
+        self._transferred = 0
+
     async def limit(self, amount: int, *, cancelled: asyncio.Event) -> None:
         if self.max_bytes_per_second is None:
             return
@@ -371,10 +382,13 @@ class _RateLimiter:
         self._transferred += amount
         target_elapsed = self._transferred / self.max_bytes_per_second
         remaining = target_elapsed - (loop.time() - self._started_at)
-        while remaining > 0:
+        while remaining > 0 and self.max_bytes_per_second is not None:
             if cancelled.is_set():
                 raise DownloadCancelled("Download cancelled. The partial file was kept for resume.")
             await asyncio.sleep(min(remaining, 0.25))
+            if self._started_at is None or self.max_bytes_per_second is None:
+                return
+            target_elapsed = self._transferred / self.max_bytes_per_second
             remaining = target_elapsed - (loop.time() - self._started_at)
 
 

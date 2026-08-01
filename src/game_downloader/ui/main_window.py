@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -66,8 +65,8 @@ class MainWindow(QMainWindow):
         self.workers: set[CoroutineWorker | FuckingFastWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
         self.setWindowTitle("Oyun İndirici")
-        self.setMinimumSize(940, 720)
-        self.resize(1080, 800)
+        self.setMinimumSize(1040, 680)
+        self.resize(1280, 780)
         self.setStyleSheet(load_theme(self.theme_path))
         self._build_ui()
 
@@ -86,17 +85,9 @@ class MainWindow(QMainWindow):
         title.setObjectName("pageTitle")
         header_layout.addWidget(title)
         header_layout.addStretch()
-        theme_button = QPushButton("Tema")
-        theme_button.setObjectName("quietButton")
-        theme_button.clicked.connect(self._open_theme)
-        logs_button = QPushButton("Kayıtlar")
-        logs_button.setObjectName("quietButton")
-        logs_button.clicked.connect(self._open_logs)
         settings_button = QPushButton("Ayarlar")
         settings_button.setObjectName("quietButton")
         settings_button.clicked.connect(self._open_settings)
-        header_layout.addWidget(theme_button)
-        header_layout.addWidget(logs_button)
         header_layout.addWidget(settings_button)
         layout.addWidget(header)
 
@@ -123,25 +114,41 @@ class MainWindow(QMainWindow):
         search_layout.addLayout(search_row)
         layout.addWidget(search_card)
 
+        content_row = QHBoxLayout()
+        content_row.setSpacing(14)
+
+        results_card = QFrame()
+        results_card.setProperty("class", "card")
+        results_layout = QVBoxLayout(results_card)
+        results_layout.setContentsMargins(18, 14, 18, 18)
+        results_layout.setSpacing(10)
         results_title = QLabel("Sonuçlar")
         results_title.setObjectName("sectionTitle")
-        layout.addWidget(results_title)
+        results_layout.addWidget(results_title)
         self.results = QListWidget()
         self.results.setSpacing(2)
         self.results.itemDoubleClicked.connect(lambda _: self._select_result())
         self.results.currentRowChanged.connect(
             lambda row: self.select_button.setEnabled(row >= 0)
         )
-        layout.addWidget(self.results, 1)
+        results_layout.addWidget(self.results, 1)
         self.select_button = QPushButton("İndir")
         self.select_button.setObjectName("primaryButton")
         self.select_button.setEnabled(False)
         self.select_button.clicked.connect(self._select_result)
-        layout.addWidget(self.select_button)
+        results_layout.addWidget(self.select_button)
+        content_row.addWidget(results_card, 3)
 
-        details = QGroupBox("Seçilen")
-        details.setMinimumHeight(165)
-        grid = QGridLayout(details)
+        details = QFrame()
+        details.setProperty("class", "card")
+        details.setMinimumWidth(360)
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(18, 14, 18, 18)
+        details_layout.setSpacing(10)
+        details_title = QLabel("Seçilen")
+        details_title.setObjectName("sectionTitle")
+        details_layout.addWidget(details_title)
+        grid = QGridLayout()
         grid.setVerticalSpacing(8)
         grid.setColumnStretch(1, 1)
         self.archive_label = QLabel("—")
@@ -159,12 +166,19 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.destination, 2, 1)
         grid.addWidget(browse, 2, 2)
         grid.addWidget(self.space_label, 3, 1, 1, 2)
-        layout.addWidget(details)
-        layout.addSpacing(6)
+        details_layout.addLayout(grid)
+        details_layout.addStretch()
+        content_row.addWidget(details, 2)
+        layout.addLayout(content_row, 1)
 
-        activity_title = QLabel("Durum")
+        activity_card = QFrame()
+        activity_card.setProperty("class", "card")
+        activity_layout = QVBoxLayout(activity_card)
+        activity_layout.setContentsMargins(18, 14, 18, 18)
+        activity_layout.setSpacing(10)
+        activity_title = QLabel("İndirme durumu")
         activity_title.setObjectName("sectionTitle")
-        layout.addWidget(activity_title)
+        activity_layout.addWidget(activity_title)
         self.part_progress_label = QLabel("Part: —")
         self.part_progress_label.setObjectName("mutedLabel")
         self.part_progress = QProgressBar()
@@ -178,6 +192,22 @@ class MainWindow(QMainWindow):
         self.status = QLabel("Hazır")
         self.status.setObjectName("statusText")
         self.status.setWordWrap(True)
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(22)
+        part_column = QVBoxLayout()
+        part_column.setSpacing(7)
+        part_column.addWidget(self.part_progress_label)
+        part_column.addWidget(self.part_progress)
+        total_column = QVBoxLayout()
+        total_column.setSpacing(7)
+        total_column.addWidget(self.total_progress_label)
+        total_column.addWidget(self.total_progress)
+        progress_row.addLayout(part_column, 1)
+        progress_row.addLayout(total_column, 1)
+        activity_layout.addLayout(progress_row)
+        activity_layout.addWidget(self.transfer_label)
+        activity_layout.addWidget(self.status)
+
         controls = QHBoxLayout()
         self.extract_button = QPushButton("Tekrar çıkar")
         self.extract_button.setEnabled(False)
@@ -193,7 +223,8 @@ class MainWindow(QMainWindow):
         self.limit_speed_spin.setDecimals(1)
         self.limit_speed_spin.setSuffix(" Mbit/sn")
         self.limit_speed_spin.setEnabled(False)
-        self.limit_speed_checkbox.toggled.connect(self.limit_speed_spin.setEnabled)
+        self.limit_speed_checkbox.toggled.connect(self._speed_limit_changed)
+        self.limit_speed_spin.valueChanged.connect(self._speed_limit_changed)
         self.pause_button = QPushButton("Duraklat")
         self.pause_button.setEnabled(False)
         self.pause_button.clicked.connect(self._toggle_pause)
@@ -208,13 +239,8 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.open_folder_button)
         controls.addWidget(self.pause_button)
         controls.addWidget(self.cancel_button)
-        layout.addWidget(self.part_progress_label)
-        layout.addWidget(self.part_progress)
-        layout.addWidget(self.total_progress_label)
-        layout.addWidget(self.total_progress)
-        layout.addWidget(self.transfer_label)
-        layout.addWidget(self.status)
-        layout.addLayout(controls)
+        activity_layout.addLayout(controls)
+        layout.addWidget(activity_card)
         self.setCentralWidget(root)
 
     def _provider(self):
@@ -362,8 +388,8 @@ class MainWindow(QMainWindow):
         self.part_progress_label.setText("Part: hazırlanıyor…")
         self.total_progress_label.setText("Toplam: hesaplanıyor…")
         self.transfer_label.setText("Hız: — · Part ETA: — · Toplam ETA: —")
-        self.limit_speed_checkbox.setEnabled(False)
-        self.limit_speed_spin.setEnabled(False)
+        self.limit_speed_checkbox.setEnabled(True)
+        self.limit_speed_spin.setEnabled(self.limit_speed_checkbox.isChecked())
         self.pause_button.setEnabled(True)
         self.pause_button.setText("Duraklat")
         self.pause_button.setProperty("paused", False)
@@ -462,6 +488,25 @@ class MainWindow(QMainWindow):
             self.pause_button.setText("Devam et")
             self.pause_button.setProperty("paused", True)
             self.status.setText("İndirme duraklatıldı")
+
+    def _speed_limit_changed(self, _value: object = None) -> None:
+        enabled = self.limit_speed_checkbox.isChecked()
+        self.limit_speed_spin.setEnabled(enabled)
+        worker = self.active_download_worker
+        if worker is None:
+            return
+        max_bytes_per_second = None
+        if enabled:
+            max_bytes_per_second = round(
+                self.limit_speed_spin.value() * 1_000_000 / 8
+            )
+        worker.set_speed_limit(max_bytes_per_second)
+        if enabled:
+            self.status.setText(
+                f"Hız sınırı {self.limit_speed_spin.value():.1f} Mbit/sn olarak uygulandı"
+            )
+        else:
+            self.status.setText("İndirme hızı sınırı kaldırıldı")
 
     def _confirm_cancel_download(self) -> None:
         worker = self.active_download_worker

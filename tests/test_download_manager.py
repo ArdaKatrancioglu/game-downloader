@@ -24,6 +24,18 @@ def test_speed_limit_must_be_positive():
         DownloadManager(max_bytes_per_second=0)
 
 
+def test_speed_limit_can_be_changed_while_manager_is_alive():
+    manager = DownloadManager(max_bytes_per_second=None)
+
+    manager.set_speed_limit(125_000)
+    assert manager.max_bytes_per_second == 125_000
+    assert manager._rate_limiter.max_bytes_per_second == 125_000
+
+    manager.set_speed_limit(None)
+    assert manager.max_bytes_per_second is None
+    assert manager._rate_limiter.max_bytes_per_second is None
+
+
 @pytest.mark.asyncio
 async def test_streams_to_part_then_atomically_finishes(tmp_path):
     data = b"abcdef"

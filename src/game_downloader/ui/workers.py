@@ -114,6 +114,12 @@ class FuckingFastWorker(QThread):
                 lambda: self.downloader.cancel(delete_completed=delete_completed),
             )
 
+    def set_speed_limit(self, max_bytes_per_second: int | None) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: self.downloader.set_speed_limit(max_bytes_per_second),
+            )
+
 
 class DownloadWorker(QThread):
     progress = Signal(object)
