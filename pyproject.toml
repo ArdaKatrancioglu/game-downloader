@@ -18,7 +18,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["playwright>=1.46"]
 packaging = ["pyinstaller>=6.10"]
 dev = [
   "pytest>=8.3",
@@ -48,5 +47,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 [tool.ruff.lint.per-file-ignores]
 "src/game_downloader/download/manager.py" = ["ASYNC230", "ASYNC240"]
 "src/game_downloader/archive/extractor.py" = ["ASYNC230", "ASYNC240"]
-"src/game_downloader/storage/gofile_browser_download.py" = ["ASYNC230", "ASYNC240"]
 "src/game_downloader/storage/fuckingfast_download.py" = ["ASYNC230", "ASYNC240"]

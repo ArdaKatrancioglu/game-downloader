@@ -3,36 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
-
-from game_downloader.security import validate_filecrypt_container_url
-
-
-class GoFileSource(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["gofile"] = "gofile"
-    content_id: str = Field(min_length=3, max_length=128)
-
-    @field_validator("content_id")
-    @classmethod
-    def content_id_is_safe(cls, value: str) -> str:
-        if not all(character.isalnum() or character in "-_" for character in value):
-            raise ValueError("content_id contains unsupported characters")
-        return value
-
-
-class FileCryptSource(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["filecrypt"] = "filecrypt"
-    url: HttpUrl
-
-    @field_validator("url")
-    @classmethod
-    def url_is_safe(cls, value: HttpUrl) -> HttpUrl:
-        validate_filecrypt_container_url(str(value))
-        return value
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
 class FuckingFastPart(BaseModel):
@@ -40,7 +11,7 @@ class FuckingFastPart(BaseModel):
 
     page_url: HttpUrl
     filename: str = Field(min_length=1, max_length=500)
-    part_number: int = Field(ge=1)
+    part_number: int = Field(ge=0)
 
     @model_validator(mode="after")
     def page_and_filename_are_safe(self) -> FuckingFastPart:
@@ -67,19 +38,13 @@ class GameEntry(BaseModel):
     version: str = Field(default="Unknown", max_length=100)
     description: str = Field(default="", max_length=4000)
     archive_size: int | None = Field(default=None, ge=0)
-    source_name: str = "GoFile"
+    source_name: str = "FuckingFast"
     detail_url: HttpUrl | None = None
-    source: GoFileSource | FileCryptSource | FuckingFastSource | None = None
+    source: FuckingFastSource | None = None
 
 
 class GameRelease(GameEntry):
-    source: GoFileSource | FileCryptSource | FuckingFastSource
-
-
-class CatalogDocument(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    games: list[dict]
+    source: FuckingFastSource
 
 
 class RemoteFile(BaseModel):

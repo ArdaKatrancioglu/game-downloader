@@ -58,12 +58,12 @@ async def test_streams_to_part_then_atomically_finishes(tmp_path):
         result = await manager.download(
             resolved(
                 checksum=hashlib.sha256(data).hexdigest(),
-                referer="https://gofile.io/d/owned123",
+                referer="https://files.example/download/owned123",
             ),
             tmp_path,
         )
     assert result.read_bytes() == data
-    assert requests[0].headers["referer"] == "https://gofile.io/d/owned123"
+    assert requests[0].headers["referer"] == "https://files.example/download/owned123"
     assert not (tmp_path / "demo.zip.part").exists()
 
 
@@ -194,7 +194,7 @@ async def test_cloudflare_download_challenge_is_logged_and_explained(tmp_path, c
             with pytest.raises(DownloadError, match="Cloudflare verification"):
                 await DownloadManager(client=client, resolve_hosts=False).download(
                     resolved(
-                        referer="https://gofile.io/d/owned123",
+                        referer="https://files.example/download/owned123",
                     ),
                     tmp_path,
                 )

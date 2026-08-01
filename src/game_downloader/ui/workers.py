@@ -9,7 +9,6 @@ from PySide6.QtCore import QThread, Signal
 from game_downloader.download.manager import DownloadCancelled, DownloadManager
 from game_downloader.models import DownloadProgress, FuckingFastSource, ResolvedDownload
 from game_downloader.storage.fuckingfast_download import FuckingFastDownloader
-from game_downloader.storage.gofile_browser_download import GoFileBrowserDownload
 
 
 class CoroutineWorker(QThread):
@@ -24,37 +23,6 @@ class CoroutineWorker(QThread):
         try:
             result = asyncio.run(self.operation())
         except Exception as exc:  # The UI boundary intentionally converts errors to short text.
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(result)
-
-
-class GoFileBrowserWorker(QThread):
-    notice = Signal(str)
-    succeeded = Signal(object)
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        browser_download: GoFileBrowserDownload,
-        content_id: str,
-        destination: Path,
-    ) -> None:
-        super().__init__()
-        self.browser_download = browser_download
-        self.content_id = content_id
-        self.destination = destination
-
-    def run(self) -> None:
-        try:
-            result = asyncio.run(
-                self.browser_download.download(
-                    self.content_id,
-                    self.destination,
-                    notice=self.notice.emit,
-                )
-            )
-        except Exception as exc:
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)

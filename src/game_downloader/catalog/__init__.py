@@ -1,2 +1,0 @@
-"""Catalog provider implementations."""
-

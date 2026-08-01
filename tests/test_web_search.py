@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from game_downloader.web_search import InternetSearchProvider
+from game_downloader.web_search import InternetSearchProvider, _parse_release_heading
 
 
 @pytest.mark.asyncio
@@ -103,3 +103,64 @@ def test_detail_parser_rejects_links_without_required_filename_fragment():
         InternetSearchProvider._find_fuckingfast_parts(
             '<a href="https://fuckingfast.co/file001">Missing fragment</a>'
         )
+
+
+def test_detail_parser_keeps_all_archive_sets_and_only_turkish_optional_file():
+    names = [
+        "content.part01.rar",
+        "fg-tll.part01.rar",
+        "fg-tll.part02.rar",
+        "fg-u4.part01.rar",
+        "fg-u4.part02.rar",
+        "fg-optional-french.bin",
+        "fg-optional-turkish.bin",
+        "fg-u4-optional-russian.bin",
+        "fg-u4-optional-turkish.bin",
+    ]
+    html = "".join(
+        f'<a href="https://fuckingfast.co/file{index:03d}#{name}">{name}</a>'
+        for index, name in enumerate(names, start=1)
+    )
+
+    parts = InternetSearchProvider._find_fuckingfast_parts(html)
+
+    assert [part.filename for part in parts] == [
+        "content.part01.rar",
+        "fg-tll.part01.rar",
+        "fg-tll.part02.rar",
+        "fg-u4.part01.rar",
+        "fg-u4.part02.rar",
+        "fg-optional-turkish.bin",
+        "fg-u4-optional-turkish.bin",
+    ]
+
+
+def test_release_heading_uses_en_dash_as_title_version_separator():
+    assert _parse_release_heading("The Last Light – V1.2.3 + Bonus") == (
+        "The Last Light",
+        "v1.2.3",
+    )
+    assert _parse_release_heading("Title without version") == (
+        "Title without version",
+        "Unknown",
+    )
+    assert _parse_release_heading(
+        "Demo Game – Deluxe Edition, v1.0.21.23831 + 4 DLCs/Bonuses"
+    ) == ("Demo Game", "v1.0.21.23831")
+
+
+def test_release_heading_keeps_only_first_version_before_slash():
+    assert _parse_release_heading(
+        "Marvel’s Spider-Man 2: Digital Deluxe Edition, "
+        "v1.130.1.0/v1.131.0.0 + 2 DLCs + Unlocker + Bonus Soundtrack"
+    ) == (
+        "Marvel’s Spider-Man 2: Digital Deluxe Edition",
+        "v1.130.1.0",
+    )
+    assert _parse_release_heading(
+        "ELDEN RING: Shadow of the Erdtree Deluxe Edition, "
+        "v1.12/v1.12.1 + 9 DLCs/Bonuses + Windows 7 Fix"
+    ) == (
+        "ELDEN RING: Shadow of the Erdtree Deluxe Edition",
+        "v1.12",
+    )

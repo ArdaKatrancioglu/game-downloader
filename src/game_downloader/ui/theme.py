@@ -77,8 +77,30 @@ QLabel#sectionTitle {
     font-size: 16px;
     font-weight: 650;
 }
+QLabel#metadataTitle {
+    color: @text@;
+    font-size: 14px;
+    font-weight: 700;
+}
+QLabel#metadataValue {
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 500;
+}
 QLabel#statusText {
     color: @text@;
+}
+QLabel#signatureLabel {
+    color: @muted@;
+    font-size: 11px;
+    font-style: italic;
+}
+QFrame#cardDivider {
+    color: @border@;
+    background: @border@;
+    border: 0;
+    min-height: 1px;
+    max-height: 1px;
 }
 QFrame.card, QGroupBox {
     background: @surface@;
@@ -87,6 +109,21 @@ QFrame.card, QGroupBox {
 }
 QFrame.card:hover {
     border-color: @border_focus@;
+}
+QFrame.card:disabled {
+    background: @surface_alt@;
+    border-color: @background@;
+}
+QFrame.card:disabled QLabel,
+QFrame.card:disabled QLineEdit,
+QFrame.card:disabled QListWidget {
+    color: @text@;
+}
+QFrame.card:disabled QLabel#metadataTitle {
+    color: @text@;
+}
+QFrame.card:disabled QLabel#metadataValue {
+    color: #ffffff;
 }
 QGroupBox {
     margin-top: 12px;
@@ -108,6 +145,7 @@ QLineEdit {
     border: 1px solid @border@;
     border-radius: 10px;
     selection-background-color: @accent@;
+    placeholder-text-color: @disabled@;
 }
 QLineEdit:focus {
     border-color: @border_focus@;
@@ -121,6 +159,7 @@ QListWidget {
     outline: none;
 }
 QListWidget::item {
+    color: @text@;
     min-height: 46px;
     padding: 8px 10px;
     margin: 3px;
@@ -179,6 +218,11 @@ QPushButton#dangerButton {
 QPushButton#dangerButton:hover {
     background: #ca454b;
     border-color: #f17176;
+}
+QPushButton#dangerButton:disabled {
+    color: @disabled@;
+    background: @surface_alt@;
+    border-color: @border@;
 }
 QProgressBar {
     min-height: 10px;

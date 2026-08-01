@@ -12,10 +12,7 @@ class SecurityError(ValueError):
 
 
 _CONTENT_ID = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
-_FUCKINGFAST_PART = re.compile(
-    r"^(?P<name>.+--_\.part(?P<number>\d+)\.rar)$",
-    re.IGNORECASE,
-)
+_FUCKINGFAST_PART_NUMBER = re.compile(r"\.part(?P<number>\d+)\.rar$", re.IGNORECASE)
 _TOKEN_PATTERN = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)(\S+)")
 _SENSITIVE_QUERY = {
     "t",
@@ -54,43 +51,6 @@ def validate_https_url(
     return url
 
 
-def extract_gofile_content_id(value: str) -> str:
-    if _CONTENT_ID.fullmatch(value):
-        return value
-    parsed = urlsplit(value if "://" in value else f"https:{value}")
-    if normalized_host(parsed.hostname) != "gofile.io" or parsed.scheme != "https":
-        raise SecurityError("The selected link is not an HTTPS GoFile share.")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise SecurityError("The GoFile share URL contains unsupported URL components.")
-    parts = [part for part in parsed.path.split("/") if part]
-    if (
-        len(parts) != 2
-        or parts[0] != "d"
-        or not _CONTENT_ID.fullmatch(parts[1])
-    ):
-        raise SecurityError("The GoFile share URL has an invalid content identifier.")
-    return parts[1]
-
-
-def validate_filecrypt_container_url(value: str) -> str:
-    parsed = urlsplit(value)
-    host = normalized_host(parsed.hostname)
-    if (
-        parsed.scheme != "https"
-        or (
-            host != "filecrypt.cc"
-            and not host.endswith(".filecrypt.cc")
-        )
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or not re.fullmatch(r"/Container/[A-Za-z0-9_-]+\.html", parsed.path)
-    ):
-        raise SecurityError("Geçersiz FileCrypt container bağlantısı.")
-    return value
-
-
 def validate_fuckingfast_part_url(value: str) -> tuple[str, int]:
     parsed = urlsplit(value)
     host = normalized_host(parsed.hostname)
@@ -106,10 +66,17 @@ def validate_fuckingfast_part_url(value: str) -> tuple[str, int]:
     ):
         raise SecurityError("Geçersiz FuckingFast parça bağlantısı.")
     filename = unquote(parsed.fragment)
-    match = _FUCKINGFAST_PART.fullmatch(filename)
-    if not match or safe_filename(filename) != filename:
-        raise SecurityError("FuckingFast bağlantısında geçerli bir part dosya adı yok.")
-    return filename, int(match.group("number"))
+    if not filename or safe_filename(filename) != filename:
+        raise SecurityError("FuckingFast bağlantısında geçerli bir dosya adı yok.")
+    match = _FUCKINGFAST_PART_NUMBER.search(filename)
+    return filename, int(match.group("number")) if match else 0
+
+
+def safe_folder_name(name: str) -> str:
+    candidate = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name).strip().rstrip(". ")
+    if not candidate or candidate in {".", ".."}:
+        raise SecurityError("İçerik adı klasör olarak kullanılamıyor.")
+    return candidate[:120].rstrip(". ")
 
 
 def is_public_ip(value: str) -> bool:

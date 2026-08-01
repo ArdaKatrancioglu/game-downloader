@@ -28,7 +28,7 @@ def test_http_403_trace_includes_diagnostics_and_redacts_secrets(caplog):
         json={
             "error": "forbidden",
             "token": "BODY_SECRET",
-            "download": "https://store.gofile.io/download/file?token=DIRECT_SECRET",
+            "download": "https://download.example/file?token=DIRECT_SECRET",
         },
     )
 

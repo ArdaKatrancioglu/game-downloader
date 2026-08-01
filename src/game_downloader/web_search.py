@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from hashlib import sha256
 from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
@@ -163,8 +164,11 @@ class InternetSearchProvider:
             raise ValueError("Seçilen arama sonucunda detay bağlantısı yok.")
         response = await self._get(str(entry.detail_url))
         parts = self._find_fuckingfast_parts(response.text)
+        title, version = _parse_release_heading(entry.title)
         return GameRelease(
-            **entry.model_dump(exclude={"source"}),
+            **entry.model_dump(exclude={"source", "title", "version"}),
+            title=title,
+            version=version,
             source=FuckingFastSource(parts=parts),
         )
 
@@ -191,4 +195,39 @@ class InternetSearchProvider:
             )
         if not parts:
             raise ValueError("Seçilen sayfada geçerli bir FuckingFast part bağlantısı yok.")
-        return sorted(parts, key=lambda part: (part.part_number, part.filename.casefold()))
+        filtered = [
+            part
+            for part in parts
+            if "optional" not in part.filename.casefold()
+            or "turkish" in part.filename.casefold()
+        ]
+        if not filtered:
+            raise ValueError("Sayfada zorunlu veya Türkçe içerik dosyası bulunamadı.")
+        return sorted(
+            filtered,
+            key=lambda part: (
+                "optional" in part.filename.casefold(),
+                _natural_key(part.filename),
+            ),
+        )
+
+
+def _parse_release_heading(value: str) -> tuple[str, str]:
+    version_match = re.search(
+        r"(?i)(?:^|[\s,])v(?P<version>\d+(?:\.\d+)*)\b",
+        value,
+    )
+    if version_match is None:
+        return value.strip(), "Unknown"
+    title_prefix = value[: version_match.start()].rstrip(" ,")
+    title = title_prefix.split("–", 1)[0].strip()
+    if not title:
+        return value.strip(), "Unknown"
+    return title, f"v{version_match.group('version')}"
+
+
+def _natural_key(value: str) -> tuple[object, ...]:
+    return tuple(
+        int(part) if part.isdigit() else part.casefold()
+        for part in re.split(r"(\d+)", value)
+    )

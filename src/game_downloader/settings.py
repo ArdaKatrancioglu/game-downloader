@@ -25,21 +25,6 @@ class AppSettings(BaseSettings):
     max_extracted_file_count: int = 100_000
     log_level: str = "INFO"
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_catalog_search_settings(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        if "web_search_url" not in migrated and "catalog_url" in migrated:
-            migrated["web_search_url"] = migrated["catalog_url"]
-        if (
-            "allowed_search_domains" not in migrated
-            and "allowed_catalog_domains" in migrated
-        ):
-            migrated["allowed_search_domains"] = migrated["allowed_catalog_domains"]
-        return migrated
-
     @model_validator(mode="after")
     def part_delay_range_is_valid(self) -> AppSettings:
         if self.fuckingfast_part_delay_min_seconds > self.fuckingfast_part_delay_max_seconds:

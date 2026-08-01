@@ -11,7 +11,6 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -35,6 +34,7 @@ from game_downloader.models import (
     GameRelease,
     MultipartDownloadProgress,
 )
+from game_downloader.security import safe_folder_name
 from game_downloader.settings import AppSettings, SettingsRepository
 from game_downloader.storage.fuckingfast_download import FuckingFastDownloader
 from game_downloader.ui.settings_dialog import SettingsDialog
@@ -43,7 +43,7 @@ from game_downloader.ui.workers import (
     CoroutineWorker,
     FuckingFastWorker,
 )
-from game_downloader.web_search import InternetSearchProvider
+from game_downloader.web_search import InternetSearchProvider, _parse_release_heading
 
 
 class MainWindow(QMainWindow):
@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
         self.active_download_worker: FuckingFastWorker | None = None
         self.workers: set[CoroutineWorker | FuckingFastWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
-        self.setWindowTitle("Oyun İndirici")
+        self.setWindowTitle("Ipsum İndirici")
         self.setMinimumSize(1040, 680)
         self.resize(1280, 780)
         self.setStyleSheet(load_theme(self.theme_path))
@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):
         header.setObjectName("headerCard")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("Oyun İndirici")
+        title = QLabel("Ipsum İndirici")
         title.setObjectName("pageTitle")
         header_layout.addWidget(title)
         header_layout.addStretch()
@@ -91,14 +91,15 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(settings_button)
         layout.addWidget(header)
 
-        search_card = QFrame()
-        search_card.setProperty("class", "card")
-        search_layout = QVBoxLayout(search_card)
+        self.search_card = QFrame()
+        self.search_card.setProperty("class", "card")
+        search_layout = QVBoxLayout(self.search_card)
         search_layout.setContentsMargins(18, 14, 18, 18)
         search_layout.setSpacing(10)
         search_title = QLabel("Oyun ara")
         search_title.setObjectName("sectionTitle")
         search_layout.addWidget(search_title)
+        search_layout.addWidget(_divider())
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Oyun adı")
         self.search_input.setClearButtonEnabled(True)
@@ -112,63 +113,69 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.search_input, 1)
         search_row.addWidget(self.search_button)
         search_layout.addLayout(search_row)
-        layout.addWidget(search_card)
+        layout.addWidget(self.search_card)
 
         content_row = QHBoxLayout()
         content_row.setSpacing(14)
 
-        results_card = QFrame()
-        results_card.setProperty("class", "card")
-        results_layout = QVBoxLayout(results_card)
+        self.results_card = QFrame()
+        self.results_card.setProperty("class", "card")
+        results_layout = QVBoxLayout(self.results_card)
         results_layout.setContentsMargins(18, 14, 18, 18)
         results_layout.setSpacing(10)
         results_title = QLabel("Sonuçlar")
         results_title.setObjectName("sectionTitle")
         results_layout.addWidget(results_title)
+        results_layout.addWidget(_divider())
         self.results = QListWidget()
         self.results.setSpacing(2)
         self.results.itemDoubleClicked.connect(lambda _: self._select_result())
-        self.results.currentRowChanged.connect(
-            lambda row: self.select_button.setEnabled(row >= 0)
-        )
+        self.results.currentRowChanged.connect(self._preview_selected_result)
         results_layout.addWidget(self.results, 1)
         self.select_button = QPushButton("İndir")
         self.select_button.setObjectName("primaryButton")
         self.select_button.setEnabled(False)
         self.select_button.clicked.connect(self._select_result)
         results_layout.addWidget(self.select_button)
-        content_row.addWidget(results_card, 3)
+        content_row.addWidget(self.results_card, 3)
 
-        details = QFrame()
-        details.setProperty("class", "card")
-        details.setMinimumWidth(360)
-        details_layout = QVBoxLayout(details)
+        self.details_card = QFrame()
+        self.details_card.setProperty("class", "card")
+        self.details_card.setMinimumWidth(360)
+        details_layout = QVBoxLayout(self.details_card)
         details_layout.setContentsMargins(18, 14, 18, 18)
         details_layout.setSpacing(10)
         details_title = QLabel("Seçilen")
         details_title.setObjectName("sectionTitle")
         details_layout.addWidget(details_title)
+        details_layout.addWidget(_divider())
         grid = QGridLayout()
         grid.setVerticalSpacing(8)
         grid.setColumnStretch(1, 1)
         self.archive_label = QLabel("—")
+        self.archive_label.setObjectName("metadataValue")
+        self.version_label = QLabel("—")
+        self.version_label.setObjectName("metadataValue")
         self.size_label = QLabel("—")
-        self.destination = QLineEdit(str(self.settings.default_download_folder))
-        browse = QPushButton("Değiştir")
-        browse.clicked.connect(self._choose_destination)
+        self.size_label.setObjectName("metadataValue")
         self.space_label = QLabel("Boş alan: —")
         self.space_label.setObjectName("mutedLabel")
-        grid.addWidget(QLabel("Oyun"), 0, 0)
+        game_title = QLabel("Oyun:")
+        game_title.setObjectName("metadataTitle")
+        version_title = QLabel("Version:")
+        version_title.setObjectName("metadataTitle")
+        size_title = QLabel("Boyut:")
+        size_title.setObjectName("metadataTitle")
+        grid.addWidget(game_title, 0, 0)
         grid.addWidget(self.archive_label, 0, 1, 1, 2)
-        grid.addWidget(QLabel("Boyut"), 1, 0)
-        grid.addWidget(self.size_label, 1, 1, 1, 2)
-        grid.addWidget(QLabel("Klasör"), 2, 0)
-        grid.addWidget(self.destination, 2, 1)
-        grid.addWidget(browse, 2, 2)
+        grid.addWidget(version_title, 1, 0)
+        grid.addWidget(self.version_label, 1, 1, 1, 2)
+        grid.addWidget(size_title, 2, 0)
+        grid.addWidget(self.size_label, 2, 1, 1, 2)
         grid.addWidget(self.space_label, 3, 1, 1, 2)
         details_layout.addLayout(grid)
         details_layout.addStretch()
-        content_row.addWidget(details, 2)
+        content_row.addWidget(self.details_card, 2)
         layout.addLayout(content_row, 1)
 
         activity_card = QFrame()
@@ -176,9 +183,10 @@ class MainWindow(QMainWindow):
         activity_layout = QVBoxLayout(activity_card)
         activity_layout.setContentsMargins(18, 14, 18, 18)
         activity_layout.setSpacing(10)
-        activity_title = QLabel("İndirme durumu")
+        activity_title = QLabel("İndirme Durumu")
         activity_title.setObjectName("sectionTitle")
         activity_layout.addWidget(activity_title)
+        activity_layout.addWidget(_divider())
         self.part_progress_label = QLabel("Part: —")
         self.part_progress_label.setObjectName("mutedLabel")
         self.part_progress = QProgressBar()
@@ -187,8 +195,12 @@ class MainWindow(QMainWindow):
         self.total_progress_label.setObjectName("mutedLabel")
         self.total_progress = QProgressBar()
         self.total_progress.setRange(0, 100)
-        self.transfer_label = QLabel("Hız: — · Part ETA: — · Toplam ETA: —")
+        self.transfer_label = QLabel("Hız: —")
         self.transfer_label.setObjectName("mutedLabel")
+        self.part_eta_label = QLabel("Kalan süre: —")
+        self.part_eta_label.setObjectName("mutedLabel")
+        self.total_eta_label = QLabel("Kalan süre: —")
+        self.total_eta_label.setObjectName("mutedLabel")
         self.status = QLabel("Hazır")
         self.status.setObjectName("statusText")
         self.status.setWordWrap(True)
@@ -198,15 +210,16 @@ class MainWindow(QMainWindow):
         part_column.setSpacing(7)
         part_column.addWidget(self.part_progress_label)
         part_column.addWidget(self.part_progress)
+        part_column.addWidget(self.part_eta_label)
         total_column = QVBoxLayout()
         total_column.setSpacing(7)
         total_column.addWidget(self.total_progress_label)
         total_column.addWidget(self.total_progress)
+        total_column.addWidget(self.total_eta_label)
         progress_row.addLayout(part_column, 1)
         progress_row.addLayout(total_column, 1)
         activity_layout.addLayout(progress_row)
         activity_layout.addWidget(self.transfer_label)
-        activity_layout.addWidget(self.status)
 
         controls = QHBoxLayout()
         self.extract_button = QPushButton("Tekrar çıkar")
@@ -241,6 +254,12 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.cancel_button)
         activity_layout.addLayout(controls)
         layout.addWidget(activity_card)
+        footer = QHBoxLayout()
+        footer.addWidget(self.status, 1)
+        signature = QLabel("Made with Love by Arda")
+        signature.setObjectName("signatureLabel")
+        footer.addWidget(signature)
+        layout.addLayout(footer)
         self.setCentralWidget(root)
 
     def _provider(self):
@@ -261,6 +280,8 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _search(self) -> None:
+        if self.active_download_worker is not None:
+            return
         query = self.search_input.text().strip()
         if not query:
             self.status.setText("Oyun adı yaz.")
@@ -294,12 +315,28 @@ class MainWindow(QMainWindow):
             self.results.setCurrentRow(0)
         self.status.setText(f"Web aramasından {len(self.entries)} sonuç")
 
+    def _preview_selected_result(self, row: int) -> None:
+        self.select_button.setEnabled(
+            row >= 0 and self.active_download_worker is None
+        )
+        if row < 0 or row >= len(self.entries):
+            self._reset_selected_metadata()
+            return
+        title, version = _parse_release_heading(self.entries[row].title)
+        if version == "Unknown":
+            self._reset_selected_metadata()
+            return
+        self.archive_label.setText(title)
+        self.version_label.setText(version)
+        self.size_label.setText("—")
+
     def _select_result(self) -> None:
         row = self.results.currentRow()
         if row < 0:
             self.status.setText("Bir sonuç seç.")
             return
         entry = self.entries[row]
+        self._set_browsing_enabled(False)
         self.search_button.setEnabled(False)
         self.select_button.setEnabled(False)
         self.results.setEnabled(False)
@@ -311,38 +348,31 @@ class MainWindow(QMainWindow):
             return await self.active_provider.get_release(entry.id)
 
         worker = CoroutineWorker(prepare)
-        worker.succeeded.connect(self._catalog_release_ready)
+        worker.succeeded.connect(self._release_ready)
         worker.failed.connect(self._prepare_failed)
         self._start_worker(worker)
 
-    def _catalog_release_ready(self, value: object) -> None:
+    def _release_ready(self, value: object) -> None:
         self.current_release = value
-        self.archive_label.setText(
-            f"{self.current_release.title} · {self.current_release.version}"
-        )
-        self.size_label.setText(_format_bytes(self.current_release.archive_size))
+        self.archive_label.setText(self.current_release.title)
+        self.version_label.setText(self.current_release.version)
+        self.size_label.setText("—")
         self._update_space()
         if not isinstance(self.current_release.source, FuckingFastSource):
             self._prepare_failed("Seçilen sonuçta FuckingFast part bağlantısı yok.")
             return
-        self.size_label.setText(f"{len(self.current_release.source.parts)} part")
         self.status.setText("Sıralı indirme başlatılıyor…")
         self._download()
 
     def _prepare_failed(self, message: str) -> None:
+        self._set_browsing_enabled(True)
         self.search_button.setEnabled(True)
         self.select_button.setEnabled(self.results.currentRow() >= 0)
         self.results.setEnabled(True)
         self._show_error(message)
 
-    def _choose_destination(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "İndirme klasörü")
-        if path:
-            self.destination.setText(path)
-            self._update_space()
-
     def _update_space(self) -> None:
-        path = Path(self.destination.text()).expanduser()
+        path = self.settings.default_download_folder.expanduser()
         try:
             free = shutil.disk_usage(path).free
         except OSError:
@@ -361,7 +391,10 @@ class MainWindow(QMainWindow):
         self.extracted_path = None
         self.open_folder_button.setEnabled(False)
         self.extract_button.setEnabled(False)
-        folder = Path(self.destination.text()).expanduser()
+        folder = (
+            self.settings.default_download_folder.expanduser()
+            / safe_folder_name(self.current_release.title)
+        )
         folder.mkdir(parents=True, exist_ok=True)
         max_bytes_per_second = None
         if self.limit_speed_checkbox.isChecked():
@@ -387,13 +420,16 @@ class MainWindow(QMainWindow):
         self.total_progress.setValue(0)
         self.part_progress_label.setText("Part: hazırlanıyor…")
         self.total_progress_label.setText("Toplam: hesaplanıyor…")
-        self.transfer_label.setText("Hız: — · Part ETA: — · Toplam ETA: —")
+        self.transfer_label.setText("Hız: —")
+        self.part_eta_label.setText("Kalan süre: hesaplanıyor…")
+        self.total_eta_label.setText("Kalan süre: hesaplanıyor…")
         self.limit_speed_checkbox.setEnabled(True)
         self.limit_speed_spin.setEnabled(self.limit_speed_checkbox.isChecked())
         self.pause_button.setEnabled(True)
         self.pause_button.setText("Duraklat")
         self.pause_button.setProperty("paused", False)
         self.cancel_button.setEnabled(True)
+        self._set_browsing_enabled(False)
         self.status.setText("İlk FuckingFast part’ı hazırlanıyor…")
         self._start_worker(worker)
 
@@ -404,8 +440,7 @@ class MainWindow(QMainWindow):
         for path in self.downloaded_paths:
             with suppress(OSError):
                 total_size += path.stat().st_size
-        self.archive_label.setText(f"{len(self.downloaded_paths)} part indirildi")
-        self.size_label.setText(_format_bytes(total_size))
+        self.size_label.setText(_format_total_gb(total_size))
         self.part_progress.setRange(0, 100)
         self.part_progress.setValue(100)
         self.total_progress.setRange(0, 100)
@@ -414,7 +449,9 @@ class MainWindow(QMainWindow):
         self.total_progress_label.setText(
             f"Toplam: {_format_bytes(total_size)} / {_format_bytes(total_size)} (%100)"
         )
-        self.transfer_label.setText("Hız: — · Part ETA: 0 sn · Toplam ETA: 0 sn")
+        self.transfer_label.setText("Hız: —")
+        self.part_eta_label.setText("Kalan süre: 0 sn")
+        self.total_eta_label.setText("Kalan süre: 0 sn")
         self._finish_download_controls()
         self.open_folder_button.setEnabled(bool(self.downloaded_paths))
         self.status.setText(
@@ -438,41 +475,69 @@ class MainWindow(QMainWindow):
             )
             self.total_progress.setRange(0, 0)
         else:
-            prefix = "≈ " if progress.total_is_estimate else ""
             self.total_progress_label.setText(
                 f"Toplam: {_format_bytes(progress.completed_bytes + part.downloaded)} / "
-                f"{prefix}{_format_bytes(progress.estimated_total_bytes)} "
+                f"{_format_bytes(progress.estimated_total_bytes)} "
                 f"(%{progress.total_percent:.1f})"
             )
+            self.size_label.setText(_format_total_gb(progress.estimated_total_bytes))
             _set_progress_bar(self.total_progress, progress.total_percent)
-        self.transfer_label.setText(
-            f"Hız: {_format_speed(part.bytes_per_second)} · "
-            f"Part ETA: {_format_duration(part.eta_seconds)} · "
-            f"Toplam ETA: {_format_duration(progress.total_eta_seconds)}"
+        self.transfer_label.setText(f"Hız: {_format_speed(part.bytes_per_second)}")
+        self.part_eta_label.setText(
+            f"Kalan süre: {_format_duration(part.eta_seconds)}"
+        )
+        self.total_eta_label.setText(
+            f"Kalan süre: {_format_duration(progress.total_eta_seconds)}"
         )
 
     def _download_failed(self, message: str) -> None:
-        self.part_progress.setRange(0, 100)
-        self.total_progress.setRange(0, 100)
+        self._reset_download_progress()
         self._finish_download_controls()
         self._show_error(message)
 
     def _download_cancelled(self, message: str) -> None:
-        self.part_progress.setRange(0, 100)
-        self.total_progress.setRange(0, 100)
+        self._reset_download_progress()
         self._finish_download_controls()
+        self.current_release = None
+        self._reset_selected_metadata()
         self.status.setText(message)
+
+    def _reset_selected_metadata(self) -> None:
+        self.archive_label.setText("—")
+        self.version_label.setText("—")
+        self.size_label.setText("—")
+
+    def _reset_download_progress(self) -> None:
+        self.part_progress.setRange(0, 100)
+        self.part_progress.setValue(0)
+        self.total_progress.setRange(0, 100)
+        self.total_progress.setValue(0)
+        self.part_progress_label.setText("Part: —")
+        self.total_progress_label.setText("Toplam: —")
+        self.transfer_label.setText("Hız: —")
+        self.part_eta_label.setText("Kalan süre: —")
+        self.total_eta_label.setText("Kalan süre: —")
 
     def _finish_download_controls(self) -> None:
         self.active_download_worker = None
         self.search_button.setEnabled(True)
         self.select_button.setEnabled(self.results.currentRow() >= 0)
         self.results.setEnabled(True)
+        self._set_browsing_enabled(True)
         self.limit_speed_checkbox.setEnabled(True)
         self.limit_speed_spin.setEnabled(self.limit_speed_checkbox.isChecked())
         self.pause_button.setEnabled(False)
         self.pause_button.setText("Duraklat")
         self.cancel_button.setEnabled(False)
+
+    def _set_browsing_enabled(self, enabled: bool) -> None:
+        self.search_card.setEnabled(enabled)
+        self.results_card.setEnabled(enabled)
+        self.details_card.setEnabled(enabled)
+        self.search_input.setEnabled(enabled)
+        self.search_button.setEnabled(enabled)
+        self.results.setEnabled(enabled)
+        self.select_button.setEnabled(enabled and self.results.currentRow() >= 0)
 
     def _toggle_pause(self) -> None:
         worker = self.active_download_worker
@@ -599,7 +664,7 @@ class MainWindow(QMainWindow):
         def save(settings: AppSettings) -> None:
             self.settings = settings
             self.repository.save(settings)
-            self.destination.setText(str(settings.default_download_folder))
+            self._update_space()
 
         dialog.settings_saved.connect(save)
         dialog.exec()
@@ -618,7 +683,20 @@ def _format_bytes(value: int | None) -> str:
 def _format_speed(bytes_per_second: float) -> str:
     if bytes_per_second <= 0:
         return "—"
-    return f"{_format_bytes(round(bytes_per_second))}/sn"
+    return f"{bytes_per_second * 8 / 1_000_000:.1f} Mbit/sn"
+
+
+def _format_total_gb(value: int) -> str:
+    gibibytes = value / 1024**3
+    rounded = max(1, round(gibibytes / 5) * 5)
+    return f"{rounded} GB"
+
+
+def _divider() -> QFrame:
+    divider = QFrame()
+    divider.setObjectName("cardDivider")
+    divider.setFrameShape(QFrame.Shape.HLine)
+    return divider
 
 
 def _format_duration(seconds: float | None) -> str:
