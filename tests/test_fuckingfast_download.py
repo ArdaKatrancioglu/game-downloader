@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -20,14 +21,31 @@ def part(number: int) -> FuckingFastPart:
 
 
 @pytest.mark.asyncio
-async def test_parts_use_one_cookie_session_and_download_strictly_in_order(tmp_path: Path):
+async def test_parts_use_one_cookie_session_and_download_strictly_in_order(
+    tmp_path: Path,
+    monkeypatch,
+):
     events: list[str] = []
+    request_ids: list[str] = []
     payloads = {1: b"first-part", 2: b"second-part"}
+
+    async def fake_sleep(seconds: float) -> None:
+        events.append(f"delay-{seconds:g}")
+
+    monkeypatch.setattr(
+        "game_downloader.storage.fuckingfast_download.asyncio.sleep",
+        fake_sleep,
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "fuckingfast.co" and request.method == "GET":
+            request_ids.append(request.headers["x-request-id"])
+            UUID(request.headers["x-request-id"])
             number = int(request.url.path.removeprefix("/file"))
             events.append(f"page-{number}")
+            assert request.headers["user-agent"] == "AuthorizedGameDownloader/0.1"
+            assert request.headers["accept"] == "*/*"
+            assert request.headers["cache-control"] == "no-cache"
             if number == 2:
                 assert request.headers["cookie"] == "session=verified"
             return httpx.Response(
@@ -39,6 +57,8 @@ async def test_parts_use_one_cookie_session_and_download_strictly_in_order(tmp_p
                 request=request,
             )
         if request.url.host == "fuckingfast.co" and request.method == "POST":
+            request_ids.append(request.headers["x-request-id"])
+            UUID(request.headers["x-request-id"])
             number = int(request.url.path.split("/")[2].removeprefix("public"))
             events.append(f"go-{number}")
             assert request.content == b""
@@ -82,12 +102,20 @@ async def test_parts_use_one_cookie_session_and_download_strictly_in_order(tmp_p
         "page-1",
         "go-1",
         "download-1",
+        "delay-3",
         "page-2",
         "go-2",
         "download-2",
     ]
     assert [path.read_bytes() for path in paths] == [b"first-part", b"second-part"]
+    assert len(request_ids) == len(set(request_ids)) == 4
     assert any("Part 1/2 tamamlandı" in notice for notice in notices)
+    assert any("3 saniye bekleniyor" in notice for notice in notices)
+
+
+def test_negative_part_delay_is_rejected():
+    with pytest.raises(ValueError, match="negatif"):
+        FuckingFastDownloader(part_delay_seconds=-1)
 
 
 @pytest.mark.asyncio

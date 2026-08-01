@@ -21,10 +21,12 @@ def test_saved_settings_use_web_search_names_and_drop_catalog_fields(tmp_path):
         AppSettings(
             web_search_url="https://search.example/",
             allowed_search_domains=["search.example"],
+            fuckingfast_part_delay_seconds=5,
         )
     )
 
     payload = json.loads(path.read_text())
     assert payload["web_search_url"] == "https://search.example/"
     assert payload["allowed_search_domains"] == ["search.example"]
+    assert payload["fuckingfast_part_delay_seconds"] == 5
     assert all("catalog" not in key for key in payload)

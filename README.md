@@ -84,6 +84,11 @@ tamamlanır:
    `.part` geçici dosyası atomik olarak gerçek dosya adına çevrilir.
 
 Bir part tamamen indirilip doğrulanmadan sonraki part'ın sayfasına gidilmez.
+FuckingFast sayfa ve `/go` isteklerine cache/WAF ayrımı için standart, her
+istekte yenilenen bir `X-Request-ID` UUID başlığı eklenir; Postman veya tarayıcı
+User-Agent'i taklit edilmez.
+Tamamlanan part ile sonraki part isteği arasında varsayılan olarak 3 saniye
+beklenir; bu değer Ayarlar bölümünden 0–60 saniye arasında değiştirilebilir.
 Hata halinde tamamlanmış önceki part'lar ve yarım `.part` dosyası korunur. Opaque
 token istemci tarafında üretilmez veya tahmin edilmez.
 

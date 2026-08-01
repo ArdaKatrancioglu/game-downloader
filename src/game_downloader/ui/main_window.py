@@ -304,7 +304,9 @@ class MainWindow(QMainWindow):
         folder = Path(self.destination.text()).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
         worker = FuckingFastWorker(
-            FuckingFastDownloader(),
+            FuckingFastDownloader(
+                part_delay_seconds=self.settings.fuckingfast_part_delay_seconds,
+            ),
             self.current_release.source,
             folder,
         )

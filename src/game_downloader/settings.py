@@ -19,6 +19,7 @@ class AppSettings(BaseSettings):
     web_search_url: str | None = None
     allowed_search_domains: list[str] = Field(default_factory=list)
     default_download_folder: Path = Path.home() / "Downloads"
+    fuckingfast_part_delay_seconds: float = Field(default=3.0, ge=0, le=60)
     max_extracted_archive_size: int = 50 * 1024**3
     max_extracted_file_count: int = 100_000
     log_level: str = "INFO"

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -23,8 +25,10 @@ logger = logging.getLogger(__name__)
 _GO_PATH = re.compile(r"^/f/(?P<public_id>[A-Za-z0-9_-]{3,128})/go$")
 _DOWNLOAD_PATH = re.compile(r"^/dl/[^/]+$")
 FUCKINGFAST_HEADERS = {
-    "User-Agent": "AuthorizedGameDownloader/0.1 (FuckingFast download client)",
-    "Accept": "text/html,application/xhtml+xml",
+    "User-Agent": "AuthorizedGameDownloader/0.1",
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate",
+    "Cache-Control": "no-cache",
 }
 
 ProgressCallback = Callable[[DownloadProgress], Awaitable[None] | None]
@@ -43,9 +47,13 @@ class FuckingFastDownloader:
         *,
         client: httpx.AsyncClient | None = None,
         resolve_hosts: bool = True,
+        part_delay_seconds: float = 3.0,
     ) -> None:
+        if part_delay_seconds < 0:
+            raise ValueError("Part gecikmesi negatif olamaz.")
         self._client = client
         self.resolve_hosts = resolve_hosts
+        self.part_delay_seconds = part_delay_seconds
 
     async def download(
         self,
@@ -70,6 +78,13 @@ class FuckingFastDownloader:
             manager = DownloadManager(client=client, resolve_hosts=self.resolve_hosts)
             total_parts = len(source.parts)
             for index, part in enumerate(source.parts, start=1):
+                if index > 1 and self.part_delay_seconds:
+                    if notice:
+                        await _call(
+                            notice,
+                            f"Sonraki part için {self.part_delay_seconds:g} saniye bekleniyor…",
+                        )
+                    await asyncio.sleep(self.part_delay_seconds)
                 if notice:
                     await _call(notice, f"Part {index}/{total_parts} hazırlanıyor…")
                 resolved = await self._resolve_part(client, part)
@@ -197,7 +212,13 @@ class FuckingFastDownloader:
         operation: str,
         content: bytes | None = None,
     ) -> httpx.Response:
-        request = client.build_request(method, url, headers=headers, content=content)
+        request_headers = {**headers, "X-Request-ID": str(uuid.uuid4())}
+        request = client.build_request(
+            method,
+            url,
+            headers=request_headers,
+            content=content,
+        )
         trace = HttpTrace(logger, operation, request.method, request.url, request.headers)
         try:
             response = await client.send(request)
