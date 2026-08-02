@@ -40,6 +40,7 @@ class AppSettings(BaseSettings):
     chrome_executable_path: Path | None = None
     browser_headless: bool = False
     browser_timeout_seconds: float = Field(default=30.0, ge=1, le=300)
+    auto_extract_zip: bool = False
     max_extracted_archive_size: int = 50 * 1024**3
     max_extracted_file_count: int = 100_000
     log_level: str = "INFO"

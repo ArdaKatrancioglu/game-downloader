@@ -19,3 +19,11 @@ def test_saved_settings_use_web_search_names(tmp_path):
     payload = json.loads(path.read_text())
     assert payload["web_search_url"] == "https://search.example/"
     assert payload["allowed_search_domains"] == ["search.example"]
+
+
+def test_auto_extract_zip_setting_round_trips(tmp_path):
+    path = tmp_path / "settings.json"
+    repository = SettingsRepository(path)
+    repository.save(AppSettings(auto_extract_zip=True))
+
+    assert repository.load().auto_extract_zip is True

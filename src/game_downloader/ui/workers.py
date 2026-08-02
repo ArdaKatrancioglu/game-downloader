@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+import httpx
 from PySide6.QtCore import QThread, Signal
 
 from game_downloader.download.manager import DownloadCancelled, DownloadManager
@@ -26,6 +27,45 @@ class CoroutineWorker(QThread):
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
+
+
+async def fetch_image(url: str) -> bytes:
+    """Fetch a small preview image without blocking the Qt event loop."""
+    images = await fetch_images([url])
+    try:
+        return images[url]
+    except KeyError as exc:
+        raise ValueError("Görsel yüklenemedi.") from exc
+
+
+async def fetch_images(urls: list[str]) -> dict[str, bytes]:
+    """Fetch preview images concurrently while keeping network use bounded."""
+    unique_urls = list(dict.fromkeys(urls))
+    if not unique_urls:
+        return {}
+    semaphore = asyncio.Semaphore(4)
+
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=httpx.Timeout(10.0),
+        headers={"User-Agent": "AuthorizedGameDownloader/0.1"},
+    ) as client:
+        async def fetch_one(url: str) -> tuple[str, bytes | None]:
+            try:
+                async with semaphore:
+                    response = await client.get(url)
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").casefold()
+                if content_type and not content_type.startswith("image/"):
+                    return url, None
+                if len(response.content) > 10 * 1024 * 1024:
+                    return url, None
+                return url, response.content
+            except (httpx.HTTPError, OSError):
+                return url, None
+
+        fetched = await asyncio.gather(*(fetch_one(url) for url in unique_urls))
+    return {url: data for url, data in fetched if data is not None}
 
 
 class DownloadWorker(QThread):

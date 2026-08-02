@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -40,7 +39,12 @@ from game_downloader.settings import AppSettings, SettingsRepository
 from game_downloader.storage.browser_direct import BrowserDirectDownloader, BrowserOptions
 from game_downloader.ui.settings_dialog import SettingsDialog
 from game_downloader.ui.theme import load_theme
-from game_downloader.ui.workers import BrowserDirectWorker, CoroutineWorker
+from game_downloader.ui.workers import (
+    BrowserDirectWorker,
+    CoroutineWorker,
+    fetch_image,
+    fetch_images,
+)
 from game_downloader.web_search import InternetSearchProvider
 
 
@@ -58,15 +62,19 @@ class MainWindow(QMainWindow):
         self.downloaded_path: Path | None = None
         self.downloaded_paths: list[Path] = []
         self.extracted_path: Path | None = None
+        self.poster_pixmap: QPixmap | None = None
+        self.image_cache: dict[str, bytes] = {}
+        self.image_request_token = 0
         self.active_provider = None
         self.active_download_worker: BrowserDirectWorker | None = None
         self.workers: set[CoroutineWorker | BrowserDirectWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
         self.setWindowTitle("Ipsum İndirici")
-        self.setMinimumSize(1040, 680)
-        self.resize(1280, 780)
+        self.setMinimumSize(1280, 850)
+        self.resize(1280, 850)
         self.setStyleSheet(load_theme(self.theme_path))
         self._build_ui()
+        QTimer.singleShot(0, self._resize_poster_canvas)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -147,31 +155,55 @@ class MainWindow(QMainWindow):
         details_title.setObjectName("sectionTitle")
         details_layout.addWidget(details_title)
         details_layout.addWidget(_divider())
+        details_content = QHBoxLayout()
+        details_content.setSpacing(16)
+        self.image_preview = QLabel("Görsel yok")
+        self.image_preview.setObjectName("imagePreview")
+        self.image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Game posters are portrait-oriented (approximately 2:3). Keeping the
+        # canvas at that ratio prevents metadata from being painted over it.
+        self.image_preview.setFixedSize(190, 285)
+        details_content.addWidget(
+            self.image_preview,
+            0,
+            Qt.AlignmentFlag.AlignTop,
+        )
         grid = QGridLayout()
         grid.setVerticalSpacing(8)
         grid.setColumnStretch(1, 1)
         self.archive_label = QLabel("—")
         self.archive_label.setObjectName("metadataValue")
+        self.id_label = QLabel("—")
+        self.id_label.setObjectName("metadataValue")
         self.version_label = QLabel("—")
         self.version_label.setObjectName("metadataValue")
         self.size_label = QLabel("—")
         self.size_label.setObjectName("metadataValue")
-        self.space_label = QLabel("Boş alan: —")
-        self.space_label.setObjectName("mutedLabel")
+        self.link_label = QLabel("—")
+        self.link_label.setObjectName("metadataValue")
+        self.link_label.setWordWrap(True)
         game_title = QLabel("Oyun:")
         game_title.setObjectName("metadataTitle")
+        id_title = QLabel("ID:")
+        id_title.setObjectName("metadataTitle")
         version_title = QLabel("Version:")
         version_title.setObjectName("metadataTitle")
         size_title = QLabel("Boyut:")
         size_title.setObjectName("metadataTitle")
+        link_title = QLabel("Link:")
+        link_title.setObjectName("metadataTitle")
         grid.addWidget(game_title, 0, 0)
         grid.addWidget(self.archive_label, 0, 1, 1, 2)
-        grid.addWidget(version_title, 1, 0)
-        grid.addWidget(self.version_label, 1, 1, 1, 2)
-        grid.addWidget(size_title, 2, 0)
-        grid.addWidget(self.size_label, 2, 1, 1, 2)
-        grid.addWidget(self.space_label, 3, 1, 1, 2)
-        details_layout.addLayout(grid)
+        grid.addWidget(id_title, 1, 0)
+        grid.addWidget(self.id_label, 1, 1, 1, 2)
+        grid.addWidget(version_title, 2, 0)
+        grid.addWidget(self.version_label, 2, 1, 1, 2)
+        grid.addWidget(size_title, 3, 0)
+        grid.addWidget(self.size_label, 3, 1, 1, 2)
+        grid.addWidget(link_title, 4, 0)
+        grid.addWidget(self.link_label, 4, 1, 1, 2)
+        details_content.addLayout(grid, 1)
+        details_layout.addLayout(details_content)
         details_layout.addStretch()
         content_row.addWidget(self.details_card, 2)
         layout.addLayout(content_row, 1)
@@ -260,6 +292,16 @@ class MainWindow(QMainWindow):
         layout.addLayout(footer)
         self.setCentralWidget(root)
 
+    def resizeEvent(self, event) -> None:
+        print(f"Window size: {event.size().width()}x{event.size().height()}", flush=True)
+        super().resizeEvent(event)
+        if hasattr(self, "image_preview"):
+            QTimer.singleShot(0, self._resize_poster_canvas)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._resize_poster_canvas)
+
     def _provider(self):
         if not self.settings.web_search_url:
             raise ValueError("Ayarlar bölümünde web arama adresini belirtin.")
@@ -303,27 +345,8 @@ class MainWindow(QMainWindow):
         self.results.setEnabled(True)
         self.results.clear()
         for entry in self.entries:
-            metadata = [
-                f"ID: {entry.id}",
-                f"Boyut: {_format_bytes(entry.archive_size)}",
-            ]
-            if entry.release_date:
-                metadata.append(f"Yayın: {entry.release_date}")
-            if entry.image_url:
-                metadata.append(f"Görsel: {entry.image_url}")
-            if entry.cover_url:
-                metadata.append(f"Kapak: {entry.cover_url}")
-            if entry.genres:
-                genre_names = [
-                    str(genre.get("name", "")) if isinstance(genre, dict) else genre
-                    for genre in entry.genres
-                ]
-                metadata.append(f"Tür: {', '.join(name for name in genre_names if name)}")
-            self.results.addItem(
-                QListWidgetItem(
-                    f"{entry.title}\n{' · '.join(metadata)}\n{entry.detail_url}"
-                )
-            )
+            self.results.addItem(QListWidgetItem(entry.title))
+        self._prefetch_result_images(self.entries)
         self.select_button.setEnabled(bool(self.entries))
         if self.entries:
             self.results.setCurrentRow(0)
@@ -337,9 +360,12 @@ class MainWindow(QMainWindow):
             self._reset_selected_metadata()
             return
         entry = self.entries[row]
+        self._load_selected_image(entry)
         self.archive_label.setText(entry.title)
+        self.id_label.setText(entry.id)
         self.version_label.setText(entry.version)
         self.size_label.setText(_format_bytes(entry.archive_size))
+        self.link_label.setText(str(entry.detail_url or "—"))
 
     def _select_result(self) -> None:
         row = self.results.currentRow()
@@ -366,9 +392,10 @@ class MainWindow(QMainWindow):
     def _release_ready(self, value: object) -> None:
         self.current_release = value
         self.archive_label.setText(self.current_release.title)
+        self.id_label.setText(self.current_release.id)
         self.version_label.setText(self.current_release.version)
         self.size_label.setText(_format_bytes(self.current_release.archive_size))
-        self._update_space()
+        self.link_label.setText(str(self.current_release.detail_url or "—"))
         self._download_browser_direct()
 
     def _prepare_failed(self, message: str) -> None:
@@ -377,16 +404,6 @@ class MainWindow(QMainWindow):
         self.select_button.setEnabled(self.results.currentRow() >= 0)
         self.results.setEnabled(True)
         self._show_error(message)
-
-    def _update_space(self) -> None:
-        path = self.settings.default_download_folder.expanduser()
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            free = shutil.disk_usage(path).free
-        except OSError:
-            self.space_label.setText("Boş alan: bilinmiyor")
-            return
-        self.space_label.setText(f"Boş alan: {_format_bytes(free)}")
 
     def _download_browser_direct(self) -> None:
         if self.current_release is None or not isinstance(
@@ -470,6 +487,13 @@ class MainWindow(QMainWindow):
         self.total_eta_label.setText("Kalan süre: 0 sn")
         self._finish_download_controls()
         self.open_folder_button.setEnabled(bool(self.downloaded_paths))
+        if (
+            self.settings.auto_extract_zip
+            and self.downloaded_path is not None
+            and self.downloaded_path.suffix.casefold() == ".zip"
+        ):
+            self._start_extraction()
+            return
         self.status.setText(f"Tamamlandı: {self.downloaded_path.name}")
 
     def _download_failed(self, message: str) -> None:
@@ -485,9 +509,105 @@ class MainWindow(QMainWindow):
         self.status.setText(message)
 
     def _reset_selected_metadata(self) -> None:
+        self.image_request_token += 1
+        self.poster_pixmap = None
+        self.image_preview.clear()
+        self.image_preview.setText("Görsel yok")
         self.archive_label.setText("—")
+        self.id_label.setText("—")
         self.version_label.setText("—")
         self.size_label.setText("—")
+        self.link_label.setText("—")
+
+    def _load_selected_image(self, entry: GameEntry) -> None:
+        self.image_request_token += 1
+        token = self.image_request_token
+        # ``image_url`` is the poster; ``cover_url`` is generally a landscape
+        # backdrop and is only a fallback when no poster was supplied.
+        image_url = entry.image_url or entry.cover_url
+        self.poster_pixmap = None
+        self.image_preview.clear()
+        if image_url is None:
+            self.image_preview.setText("Görsel yok")
+            return
+        image_url_text = str(image_url)
+        if cached := self.image_cache.get(image_url_text):
+            self._show_selected_image(token, cached)
+            return
+        self.image_preview.setText("Görsel yükleniyor…")
+        worker = CoroutineWorker(lambda: fetch_image(image_url_text))
+        worker.succeeded.connect(
+            lambda data, request_token=token, url=image_url_text: self._cache_and_show_image(
+                request_token, url, data
+            )
+        )
+        worker.failed.connect(
+            lambda _message, request_token=token: self._image_load_failed(request_token)
+        )
+        self._start_worker(worker)
+
+    def _prefetch_result_images(self, entries: list[GameEntry]) -> None:
+        urls = [
+            str(entry.image_url or entry.cover_url)
+            for entry in entries
+            if entry.image_url or entry.cover_url
+        ]
+        missing = [url for url in urls if url not in self.image_cache]
+        if not missing:
+            return
+        worker = CoroutineWorker(lambda: fetch_images(missing))
+        worker.succeeded.connect(self._store_image_cache)
+        self._start_worker(worker)
+
+    def _store_image_cache(self, value: object) -> None:
+        if isinstance(value, dict):
+            self.image_cache.update(
+                {
+                    url: data
+                    for url, data in value.items()
+                    if isinstance(url, str) and isinstance(data, bytes)
+                }
+            )
+
+    def _cache_and_show_image(self, token: int, url: str, data: object) -> None:
+        if isinstance(data, bytes):
+            self.image_cache[url] = data
+        self._show_selected_image(token, data)
+
+    def _show_selected_image(self, token: int, data: object) -> None:
+        if token != self.image_request_token:
+            return
+        pixmap = QPixmap()
+        if not isinstance(data, bytes) or not pixmap.loadFromData(data):
+            self._image_load_failed(token)
+            return
+        self.poster_pixmap = pixmap
+        self._resize_poster_canvas()
+
+    def _image_load_failed(self, token: int) -> None:
+        if token == self.image_request_token:
+            self.poster_pixmap = None
+            self.image_preview.clear()
+            self.image_preview.setText("Görsel yüklenemedi")
+
+    def _resize_poster_canvas(self) -> None:
+        """Scale the poster canvas with the available selected-card space."""
+        available_width = max(190, int(self.details_card.width() * 0.4))
+        available_height = max(285, self.details_card.height() - 120)
+        poster_width = min(440, available_width, available_height * 2 // 3)
+        poster_width = max(190, poster_width)
+        poster_height = poster_width * 3 // 2
+        if self.image_preview.width() != poster_width:
+            self.image_preview.setFixedSize(poster_width, poster_height)
+        if self.poster_pixmap is not None:
+            self.image_preview.setText("")
+            self.image_preview.setPixmap(
+                self.poster_pixmap.scaled(
+                    self.image_preview.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
 
     def _reset_download_progress(self) -> None:
         self.part_progress.setRange(0, 100)
@@ -611,12 +731,28 @@ class MainWindow(QMainWindow):
 
     def _extraction_finished(self, value: object) -> None:
         self.extracted_path = Path(value.destination)
+        archive_removed = True
+        archive = self.downloaded_path
+        if archive is not None:
+            try:
+                archive.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                archive_removed = False
+            if archive_removed:
+                self.downloaded_path = None
+                self.downloaded_paths = [
+                    path for path in self.downloaded_paths if path != archive
+                ]
         self.extract_button.setEnabled(False)
         self.search_button.setEnabled(True)
         self.select_button.setEnabled(True)
         self.results.setEnabled(True)
         self.open_folder_button.setEnabled(True)
-        self.status.setText("Tamamlandı")
+        self.status.setText(
+            "Tamamlandı" if archive_removed else "Tamamlandı; arşiv silinemedi"
+        )
 
     def _open_extracted_folder(self) -> None:
         if self.extracted_path:
@@ -643,7 +779,6 @@ class MainWindow(QMainWindow):
         def save(settings: AppSettings) -> None:
             self.settings = settings
             self.repository.save(settings)
-            self._update_space()
 
         dialog.settings_saved.connect(save)
         dialog.exec()

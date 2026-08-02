@@ -70,6 +70,11 @@ sistem Downloads klasörü seçilir. Aynı değerler sırasıyla
 `GAME_DOWNLOADER_BROWSER_TIMEOUT_SECONDS` ve
 `GAME_DOWNLOADER_DEFAULT_DOWNLOAD_FOLDER` ortam değişkenleriyle de verilebilir.
 
+**Ayarlar** içindeki “İndirme tamamlanınca ZIP dosyasını otomatik çıkar” seçeneği
+aktifse tamamlanan `.zip` arşivi aynı içerik klasöründe güvenli biçimde çıkarılır.
+Çıkarma başarıyla tamamlanınca kaynak arşiv silinir; çıkarma başarısız olursa
+arşiv korunur.
+
 Bir arama sonucu seçilip **İndir** düğmesine basıldığında tarayıcı aynı işlem
 içinde modalı açar, ilk görünür Download kaydını seçer ve indirmeyi başlatır.
 Kullanıcıdan Download ID seçmesi istenmez. Chrome'un normal sayfa akışından alınan

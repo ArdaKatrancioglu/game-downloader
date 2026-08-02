@@ -87,6 +87,13 @@ QLabel#metadataValue {
     font-size: 13px;
     font-weight: 500;
 }
+QLabel#imagePreview {
+    color: @muted@;
+    background: @surface_alt@;
+    border: 1px solid @border@;
+    border-radius: 10px;
+    font-size: 13px;
+}
 QLabel#statusText {
     color: @text@;
 }
@@ -152,6 +159,7 @@ QLineEdit:focus {
 }
 QListWidget {
     color: @text@;
+    font-size: 16px;
     background: @surface_alt@;
     border: 1px solid @border@;
     border-radius: 10px;
