@@ -91,7 +91,7 @@ QLabel#imagePreview {
     color: @muted@;
     background: @surface_alt@;
     border: 1px solid @border@;
-    border-radius: 10px;
+    border-radius: 15px;
     font-size: 13px;
 }
 QLabel#statusText {

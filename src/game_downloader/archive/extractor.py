@@ -9,12 +9,14 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from game_downloader.models import ExtractionLimits, ExtractionResult
 
 logger = logging.getLogger(__name__)
+ExtractionProgressCallback = Callable[[int, int], None]
 
 
 class ArchiveError(RuntimeError):
@@ -84,6 +86,7 @@ class ArchiveExtractor:
         destination: Path,
         *,
         overwrite: bool = False,
+        progress: ExtractionProgressCallback | None = None,
     ) -> ExtractionResult:
         if destination.exists():
             if not overwrite:
@@ -96,6 +99,9 @@ class ArchiveExtractor:
                 )
             destination.rmdir()
         members = self.list_contents(archive)
+        total_size = sum(item.size for item in members if not item.is_directory)
+        if progress:
+            progress(0, total_size)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(
             tempfile.mkdtemp(prefix=f".{destination.name}.extracting-", dir=destination.parent)
@@ -103,15 +109,17 @@ class ArchiveExtractor:
         try:
             kind = _archive_kind(archive)
             if kind == "zip":
-                self._extract_zip(archive, temporary)
+                self._extract_zip(archive, temporary, progress, total_size)
             elif kind == "tar":
-                self._extract_tar(archive, temporary)
+                self._extract_tar(archive, temporary, progress, total_size)
             elif kind == "rar":
                 self._extract_rar(archive, temporary)
                 self._validate_extracted_tree(temporary)
             else:
                 self._extract_7zip(archive, temporary)
                 self._validate_extracted_tree(temporary)
+            if progress:
+                progress(total_size, total_size)
             os.replace(temporary, destination)
         except Exception:
             logger.exception(
@@ -131,7 +139,7 @@ class ArchiveExtractor:
         return ExtractionResult(
             destination=destination,
             file_count=sum(not item.is_directory for item in members),
-            total_size=sum(item.size for item in members if not item.is_directory),
+            total_size=total_size,
         )
 
     def _validate_members(self, members: list[ArchiveMember], archive_size: int) -> None:
@@ -156,7 +164,13 @@ class ArchiveExtractor:
             raise ArchiveError("The archive has a suspicious overall compression ratio.")
 
     @staticmethod
-    def _extract_zip(archive: Path, target: Path) -> None:
+    def _extract_zip(
+        archive: Path,
+        target: Path,
+        progress: ExtractionProgressCallback | None = None,
+        total_size: int = 0,
+    ) -> None:
+        extracted = 0
         with zipfile.ZipFile(archive) as source:
             for info in source.infolist():
                 output = target / _safe_member_path(info.filename)
@@ -165,10 +179,20 @@ class ArchiveExtractor:
                     continue
                 output.parent.mkdir(parents=True, exist_ok=True)
                 with source.open(info) as input_file, output.open("xb") as output_file:
-                    shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+                    while chunk := input_file.read(1024 * 1024):
+                        output_file.write(chunk)
+                        extracted += len(chunk)
+                        if progress:
+                            progress(extracted, total_size)
 
     @staticmethod
-    def _extract_tar(archive: Path, target: Path) -> None:
+    def _extract_tar(
+        archive: Path,
+        target: Path,
+        progress: ExtractionProgressCallback | None = None,
+        total_size: int = 0,
+    ) -> None:
+        extracted = 0
         with tarfile.open(archive, mode="r:*") as source:
             for info in source.getmembers():
                 output = target / _safe_member_path(info.name)
@@ -180,7 +204,11 @@ class ArchiveExtractor:
                     raise ArchiveError("A file in the archive could not be read.")
                 output.parent.mkdir(parents=True, exist_ok=True)
                 with input_file, output.open("xb") as output_file:
-                    shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+                    while chunk := input_file.read(1024 * 1024):
+                        output_file.write(chunk)
+                        extracted += len(chunk)
+                        if progress:
+                            progress(extracted, total_size)
 
     def _seven_zip(self) -> str:
         executable = shutil.which("7zz") or shutil.which("7z")

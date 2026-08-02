@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtCore import QRectF, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -42,6 +41,7 @@ from game_downloader.ui.theme import load_theme
 from game_downloader.ui.workers import (
     BrowserDirectWorker,
     CoroutineWorker,
+    ExtractionWorker,
     fetch_image,
     fetch_images,
 )
@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
         self.image_request_token = 0
         self.active_provider = None
         self.active_download_worker: BrowserDirectWorker | None = None
-        self.workers: set[CoroutineWorker | BrowserDirectWorker] = set()
+        self.workers: set[CoroutineWorker | BrowserDirectWorker | ExtractionWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
         self.setWindowTitle("Ipsum İndirici")
         self.setMinimumSize(1280, 850)
@@ -173,8 +173,6 @@ class MainWindow(QMainWindow):
         grid.setColumnStretch(1, 1)
         self.archive_label = QLabel("—")
         self.archive_label.setObjectName("metadataValue")
-        self.id_label = QLabel("—")
-        self.id_label.setObjectName("metadataValue")
         self.version_label = QLabel("—")
         self.version_label.setObjectName("metadataValue")
         self.size_label = QLabel("—")
@@ -182,20 +180,23 @@ class MainWindow(QMainWindow):
         self.link_label = QLabel("—")
         self.link_label.setObjectName("metadataValue")
         self.link_label.setWordWrap(True)
+        self.overview_label = QLabel("—")
+        self.overview_label.setObjectName("metadataValue")
+        self.overview_label.setWordWrap(True)
         game_title = QLabel("Oyun:")
         game_title.setObjectName("metadataTitle")
-        id_title = QLabel("ID:")
-        id_title.setObjectName("metadataTitle")
         version_title = QLabel("Version:")
         version_title.setObjectName("metadataTitle")
         size_title = QLabel("Boyut:")
         size_title.setObjectName("metadataTitle")
         link_title = QLabel("Link:")
         link_title.setObjectName("metadataTitle")
+        overview_title = QLabel("Açıklama:")
+        overview_title.setObjectName("metadataTitle")
         grid.addWidget(game_title, 0, 0)
         grid.addWidget(self.archive_label, 0, 1, 1, 2)
-        grid.addWidget(id_title, 1, 0)
-        grid.addWidget(self.id_label, 1, 1, 1, 2)
+        grid.addWidget(overview_title, 1, 0)
+        grid.addWidget(self.overview_label, 1, 1, 1, 2)
         grid.addWidget(version_title, 2, 0)
         grid.addWidget(self.version_label, 2, 1, 1, 2)
         grid.addWidget(size_title, 3, 0)
@@ -213,7 +214,7 @@ class MainWindow(QMainWindow):
         activity_layout = QVBoxLayout(activity_card)
         activity_layout.setContentsMargins(18, 14, 18, 18)
         activity_layout.setSpacing(10)
-        activity_title = QLabel("İndirme Durumu")
+        activity_title = QLabel("İşlem Durumu")
         activity_title.setObjectName("sectionTitle")
         activity_layout.addWidget(activity_title)
         activity_layout.addWidget(_divider())
@@ -292,15 +293,14 @@ class MainWindow(QMainWindow):
         layout.addLayout(footer)
         self.setCentralWidget(root)
 
-    def resizeEvent(self, event) -> None:
-        print(f"Window size: {event.size().width()}x{event.size().height()}", flush=True)
-        super().resizeEvent(event)
-        if hasattr(self, "image_preview"):
-            QTimer.singleShot(0, self._resize_poster_canvas)
-
     def showEvent(self, event) -> None:
         super().showEvent(event)
         QTimer.singleShot(0, self._resize_poster_canvas)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "image_preview"):
+            QTimer.singleShot(0, self._resize_poster_canvas)
 
     def _provider(self):
         if not self.settings.web_search_url:
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
 
     def _start_worker(
         self,
-        worker: CoroutineWorker | BrowserDirectWorker,
+        worker: CoroutineWorker | BrowserDirectWorker | ExtractionWorker,
     ) -> None:
         self.workers.add(worker)
         worker.finished.connect(lambda: self.workers.discard(worker))
@@ -362,10 +362,10 @@ class MainWindow(QMainWindow):
         entry = self.entries[row]
         self._load_selected_image(entry)
         self.archive_label.setText(entry.title)
-        self.id_label.setText(entry.id)
         self.version_label.setText(entry.version)
         self.size_label.setText(_format_bytes(entry.archive_size))
         self.link_label.setText(str(entry.detail_url or "—"))
+        self.overview_label.setText(entry.description or "—")
 
     def _select_result(self) -> None:
         row = self.results.currentRow()
@@ -392,10 +392,10 @@ class MainWindow(QMainWindow):
     def _release_ready(self, value: object) -> None:
         self.current_release = value
         self.archive_label.setText(self.current_release.title)
-        self.id_label.setText(self.current_release.id)
         self.version_label.setText(self.current_release.version)
         self.size_label.setText(_format_bytes(self.current_release.archive_size))
         self.link_label.setText(str(self.current_release.detail_url or "—"))
+        self.overview_label.setText(self.current_release.description or "—")
         self._download_browser_direct()
 
     def _prepare_failed(self, message: str) -> None:
@@ -427,8 +427,11 @@ class MainWindow(QMainWindow):
         worker.succeeded.connect(self._direct_download_finished)
         worker.cancelled.connect(self._download_cancelled)
         worker.failed.connect(self._download_failed)
-        self.part_progress_label.setText("Dosya: hazırlanıyor…")
-        self.total_progress_label.setText("Toplam: hesaplanıyor…")
+        phases = 3 if self.settings.auto_extract_zip else 1
+        self.part_progress_label.setText(f"Aşama 1/{phases} · İndirme hazırlanıyor…")
+        self.total_progress_label.setText("Toplam süreç: %0")
+        self.part_eta_label.setText("Bu aşamanın kalan süresi: hesaplanıyor…")
+        self.total_eta_label.setText("Toplam kalan süre: hesaplanıyor…")
         self.pause_button.setEnabled(True)
         self.cancel_button.setEnabled(True)
         self._set_browsing_enabled(False)
@@ -448,19 +451,27 @@ class MainWindow(QMainWindow):
 
     def _direct_download_progress(self, value: object) -> None:
         progress = DownloadProgress.model_validate(value)
+        phases = 3 if self.settings.auto_extract_zip else 1
         percent = "—" if progress.percent is None else f"%{progress.percent:.1f}"
         text = (
             f"{_format_bytes(progress.downloaded)} / {_format_bytes(progress.total)} "
             f"({percent})"
         )
-        self.part_progress_label.setText(f"Dosya: {text}")
-        self.total_progress_label.setText(f"Toplam: {text}")
+        self.part_progress_label.setText(f"Aşama 1/{phases} · İndirme: {text}")
         _set_progress_bar(self.part_progress, progress.percent)
-        _set_progress_bar(self.total_progress, progress.percent)
+        overall_percent = (
+            None if progress.percent is None else progress.percent / phases
+        )
+        _set_progress_bar(self.total_progress, overall_percent)
+        overall_text = "—" if overall_percent is None else f"%{overall_percent:.1f}"
+        self.total_progress_label.setText(f"Toplam süreç: {overall_text}")
         self.transfer_label.setText(f"Hız: {_format_speed(progress.bytes_per_second)}")
         eta = _format_duration(progress.eta_seconds)
-        self.part_eta_label.setText(f"Kalan süre: {eta}")
-        self.total_eta_label.setText(f"Kalan süre: {eta}")
+        self.part_eta_label.setText(f"Bu aşamanın kalan süresi: {eta}")
+        self.total_eta_label.setText(
+            f"Toplam kalan süre: {eta} + sonraki aşamalar"
+            if phases == 3 else f"Toplam kalan süre: {eta}"
+        )
 
     def _direct_download_finished(self, value: object) -> None:
         path = Path(value)
@@ -478,20 +489,28 @@ class MainWindow(QMainWindow):
         self.part_progress.setValue(100)
         self.total_progress.setRange(0, 100)
         self.total_progress.setValue(100)
-        self.part_progress_label.setText("Dosya: tamamlandı")
-        self.total_progress_label.setText(
-            f"Toplam: {_format_bytes(total_size)} / {_format_bytes(total_size)} (%100)"
-        )
-        self.transfer_label.setText("Hız: —")
-        self.part_eta_label.setText("Kalan süre: 0 sn")
-        self.total_eta_label.setText("Kalan süre: 0 sn")
-        self._finish_download_controls()
-        self.open_folder_button.setEnabled(bool(self.downloaded_paths))
-        if (
+        uses_three_phases = (
             self.settings.auto_extract_zip
             and self.downloaded_path is not None
             and self.downloaded_path.suffix.casefold() == ".zip"
-        ):
+        )
+        self.part_progress_label.setText(
+            "Aşama 1/3 · İndirme tamamlandı"
+            if uses_three_phases else "Aşama 1/1 · İndirme tamamlandı"
+        )
+        self.total_progress.setValue(33 if uses_three_phases else 100)
+        self.total_progress_label.setText(
+            "Toplam süreç: %33.3" if uses_three_phases else "Toplam süreç: %100"
+        )
+        self.transfer_label.setText("Hız: —")
+        self.part_eta_label.setText("Bu aşamanın kalan süresi: 0 sn")
+        self.total_eta_label.setText(
+            "Toplam kalan süre: çıkarma aşamasında hesaplanacak"
+            if uses_three_phases else "Toplam kalan süre: 0 sn"
+        )
+        self._finish_download_controls()
+        self.open_folder_button.setEnabled(bool(self.downloaded_paths))
+        if uses_three_phases:
             self._start_extraction()
             return
         self.status.setText(f"Tamamlandı: {self.downloaded_path.name}")
@@ -514,10 +533,10 @@ class MainWindow(QMainWindow):
         self.image_preview.clear()
         self.image_preview.setText("Görsel yok")
         self.archive_label.setText("—")
-        self.id_label.setText("—")
         self.version_label.setText("—")
         self.size_label.setText("—")
         self.link_label.setText("—")
+        self.overview_label.setText("—")
 
     def _load_selected_image(self, entry: GameEntry) -> None:
         self.image_request_token += 1
@@ -601,24 +620,36 @@ class MainWindow(QMainWindow):
             self.image_preview.setFixedSize(poster_width, poster_height)
         if self.poster_pixmap is not None:
             self.image_preview.setText("")
-            self.image_preview.setPixmap(
-                self.poster_pixmap.scaled(
-                    self.image_preview.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            scaled = self.poster_pixmap.scaled(
+                self.image_preview.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
             )
+            rounded = QPixmap(self.image_preview.size())
+            rounded.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(rounded)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            # Match QLabel#imagePreview's 15px corner radius exactly.
+            radius = 15
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(rounded.rect()), radius, radius)
+            painter.setClipPath(path)
+            x = (rounded.width() - scaled.width()) // 2
+            y = (rounded.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+            self.image_preview.setPixmap(rounded)
 
     def _reset_download_progress(self) -> None:
         self.part_progress.setRange(0, 100)
         self.part_progress.setValue(0)
         self.total_progress.setRange(0, 100)
         self.total_progress.setValue(0)
-        self.part_progress_label.setText("Dosya: —")
-        self.total_progress_label.setText("Toplam: —")
+        self.part_progress_label.setText("Aktif aşama: —")
+        self.total_progress_label.setText("Toplam süreç: —")
         self.transfer_label.setText("Hız: —")
-        self.part_eta_label.setText("Kalan süre: —")
-        self.total_eta_label.setText("Kalan süre: —")
+        self.part_eta_label.setText("Bu aşamanın kalan süresi: —")
+        self.total_eta_label.setText("Toplam kalan süre: —")
 
     def _finish_download_controls(self) -> None:
         self.active_download_worker = None
@@ -703,8 +734,9 @@ class MainWindow(QMainWindow):
     def _start_extraction(self) -> None:
         if not self.downloaded_path:
             return
+        archive = self.downloaded_path
         destination = _available_extraction_destination(
-            self.downloaded_path,
+            archive,
         )
         extractor = ArchiveExtractor(
             ExtractionLimits(
@@ -712,17 +744,47 @@ class MainWindow(QMainWindow):
                 max_files=self.settings.max_extracted_file_count,
             )
         )
-        worker = CoroutineWorker(
-            lambda: asyncio.to_thread(extractor.extract, self.downloaded_path, destination)
-        )
+        worker = ExtractionWorker(extractor, archive, destination)
+        worker.progress.connect(self._extraction_progress)
         worker.succeeded.connect(self._extraction_finished)
         worker.failed.connect(self._extraction_failed)
         self.extract_button.setEnabled(False)
         self.open_folder_button.setEnabled(False)
-        self.status.setText("Arşiv çıkarılıyor…")
+        self.part_progress.setRange(0, 0)
+        self.part_progress_label.setText("Aşama 2/3 · Arşiv inceleniyor…")
+        self.total_progress.setRange(0, 100)
+        self.total_progress.setValue(33)
+        self.total_progress_label.setText("Toplam süreç: %33.3")
+        self.part_eta_label.setText("Bu aşamanın kalan süresi: hesaplanıyor…")
+        self.total_eta_label.setText("Toplam kalan süre: hesaplanıyor…")
+        self.transfer_label.setText("Çıkarma hızı: hesaplanıyor…")
+        self.status.setText("Aşama 2/3: Arşiv çıkarılıyor…")
         self._start_worker(worker)
 
+    def _extraction_progress(self, value: object) -> None:
+        progress = DownloadProgress.model_validate(value)
+        percent = progress.percent or 0.0
+        text = (
+            f"{_format_bytes(progress.downloaded)} / {_format_bytes(progress.total)} "
+            f"(%{percent:.1f})"
+        )
+        self.part_progress_label.setText(f"Aşama 2/3 · Arşiv çıkarma: {text}")
+        _set_progress_bar(self.part_progress, percent)
+        overall_percent = (100.0 + percent) / 3
+        _set_progress_bar(self.total_progress, overall_percent)
+        self.total_progress_label.setText(f"Toplam süreç: %{overall_percent:.1f}")
+        eta = _format_duration(progress.eta_seconds)
+        self.part_eta_label.setText(f"Bu aşamanın kalan süresi: {eta}")
+        self.total_eta_label.setText(f"Toplam kalan süre: {eta}")
+        self.transfer_label.setText(
+            f"Çıkarma hızı: {_format_speed(progress.bytes_per_second)}"
+        )
+
     def _extraction_failed(self, message: str) -> None:
+        self.part_progress_label.setText("Aşama 2/3 · Arşiv çıkarma başarısız")
+        self.total_progress_label.setText("Toplam süreç: Aşama 2/3'te durdu")
+        self.part_eta_label.setText("Bu aşamanın kalan süresi: —")
+        self.total_eta_label.setText("Toplam kalan süre: —")
         self.extract_button.setEnabled(True)
         self.search_button.setEnabled(True)
         self.select_button.setEnabled(True)
@@ -731,6 +793,20 @@ class MainWindow(QMainWindow):
 
     def _extraction_finished(self, value: object) -> None:
         self.extracted_path = Path(value.destination)
+        self.part_progress.setRange(0, 100)
+        self.part_progress.setValue(100)
+        self.part_progress_label.setText("Aşama 2/3 · Arşiv çıkarma tamamlandı")
+        self.total_progress.setValue(67)
+        self.total_progress_label.setText("Toplam süreç: %66.7")
+        self.part_eta_label.setText("Bu aşamanın kalan süresi: 0 sn")
+        self.total_eta_label.setText("Toplam kalan süre: ZIP silme")
+        self.transfer_label.setText("Hız: —")
+        self.status.setText("Aşama 3/3: ZIP dosyası siliniyor…")
+        self.part_progress.setRange(0, 0)
+        self.part_progress_label.setText("Aşama 3/3 · ZIP dosyası siliniyor…")
+        QTimer.singleShot(0, self._finish_archive_deletion)
+
+    def _finish_archive_deletion(self) -> None:
         archive_removed = True
         archive = self.downloaded_path
         if archive is not None:
@@ -750,9 +826,23 @@ class MainWindow(QMainWindow):
         self.select_button.setEnabled(True)
         self.results.setEnabled(True)
         self.open_folder_button.setEnabled(True)
-        self.status.setText(
-            "Tamamlandı" if archive_removed else "Tamamlandı; arşiv silinemedi"
-        )
+        self.part_progress.setRange(0, 100)
+        if archive_removed:
+            self.part_progress.setValue(100)
+            self.total_progress.setValue(100)
+            self.part_progress_label.setText("Aşama 3/3 · ZIP dosyası silindi")
+            self.total_progress_label.setText("Toplam süreç: %100")
+            self.part_eta_label.setText("Bu aşamanın kalan süresi: 0 sn")
+            self.total_eta_label.setText("Toplam kalan süre: 0 sn")
+            self.status.setText("Tüm aşamalar tamamlandı")
+        else:
+            self.part_progress.setValue(0)
+            self.part_progress_label.setText("Aşama 3/3 · ZIP dosyası silinemedi")
+            self.total_progress.setValue(67)
+            self.total_progress_label.setText("Toplam süreç: %66.7")
+            self.part_eta_label.setText("Bu aşamanın kalan süresi: —")
+            self.total_eta_label.setText("Toplam kalan süre: —")
+            self.status.setText("Arşiv çıkarıldı; ZIP dosyası silinemedi")
 
     def _open_extracted_folder(self) -> None:
         if self.extracted_path:

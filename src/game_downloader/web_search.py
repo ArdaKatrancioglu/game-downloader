@@ -181,7 +181,7 @@ class InternetSearchProvider:
             id=game_id,
             title=title,
             version=str(first("vote_average", "version") or "Unknown"),
-            description=str(first("description", "excerpt") or ""),
+            description=str(first("overview", "description", "excerpt") or ""),
             archive_size=archive_size,
             image_url=first("imageurl", "image_url", "image", "thumbnail"),
             cover_url=first("coverurl", "cover_url"),

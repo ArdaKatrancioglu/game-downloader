@@ -7,7 +7,9 @@ from pathlib import Path
 import httpx
 from PySide6.QtCore import QThread, Signal
 
+from game_downloader.archive.extractor import ArchiveExtractor
 from game_downloader.download.manager import DownloadCancelled, DownloadManager
+from game_downloader.download.progress import ProgressTracker
 from game_downloader.models import BrowserDirectSource, DownloadProgress, ResolvedDownload
 from game_downloader.storage.browser_direct import BrowserDirectDownloader
 
@@ -24,6 +26,40 @@ class CoroutineWorker(QThread):
         try:
             result = asyncio.run(self.operation())
         except Exception as exc:  # The UI boundary intentionally converts errors to short text.
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+
+
+class ExtractionWorker(QThread):
+    progress = Signal(object)
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        extractor: ArchiveExtractor,
+        archive: Path,
+        destination: Path,
+    ) -> None:
+        super().__init__()
+        self.extractor = extractor
+        self.archive = archive
+        self.destination = destination
+
+    def run(self) -> None:
+        tracker = ProgressTracker()
+
+        def report(extracted: int, total: int) -> None:
+            self.progress.emit(tracker.update(extracted, total))
+
+        try:
+            result = self.extractor.extract(
+                self.archive,
+                self.destination,
+                progress=report,
+            )
+        except Exception as exc:
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)

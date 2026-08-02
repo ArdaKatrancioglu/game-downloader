@@ -30,6 +30,22 @@ def test_extracts_safe_zip_via_temporary_directory(tmp_path):
     assert result.file_count == 1
 
 
+def test_zip_extraction_reports_byte_progress(tmp_path):
+    archive = tmp_path / "progress.zip"
+    payload = b"authorized demo" * 100
+    write_zip(archive, [("game/data.bin", payload)])
+    reported = []
+
+    ArchiveExtractor().extract(
+        archive,
+        tmp_path / "output",
+        progress=lambda extracted, total: reported.append((extracted, total)),
+    )
+
+    assert reported[0] == (0, len(payload))
+    assert reported[-1] == (len(payload), len(payload))
+
+
 def test_detects_imported_browser_download_by_signature(tmp_path):
     archive = tmp_path / "browser-download-without-extension"
     write_zip(archive, [("readme.txt", b"authorized")])
