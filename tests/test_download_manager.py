@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 
 import httpx
@@ -65,6 +66,31 @@ async def test_streams_to_part_then_atomically_finishes(tmp_path):
     assert result.read_bytes() == data
     assert requests[0].headers["referer"] == "https://files.example/download/owned123"
     assert not (tmp_path / "demo.zip.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_compressed_transfer_length_is_not_used_as_decoded_file_size(tmp_path):
+    data = b"browser transition response" * 100
+    compressed = gzip.compress(data)
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            content=compressed,
+            headers={
+                "Content-Encoding": "gzip",
+                "Content-Length": str(len(compressed)),
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await DownloadManager(client=client, resolve_hosts=False).download(
+            resolved(size=None),
+            tmp_path,
+        )
+
+    assert result.read_bytes() == data
 
 
 @pytest.mark.asyncio

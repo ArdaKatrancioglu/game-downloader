@@ -352,6 +352,12 @@ def _response_total(
         total = content_range.rsplit("/", 1)[1]
         if total.isdigit():
             return int(total)
+    # httpx.aiter_bytes() transparently decompresses gzip/br content. In that
+    # case Content-Length describes the compressed transfer, not the number of
+    # bytes written to disk, so it cannot be used as a validation target.
+    content_encoding = response.headers.get("content-encoding", "").casefold()
+    if content_encoding and content_encoding != "identity":
+        return None
     content_length = response.headers.get("content-length")
     return existing + int(content_length) if content_length and content_length.isdigit() else None
 

@@ -7,7 +7,6 @@ from game_downloader.storage.browser_direct import (
     CAPTCHA_SELECTOR,
     DOWNLOAD_DIALOG_SELECTOR,
     BrowserDirectDownloader,
-    BrowserDirectError,
     UpgradeRequiredError,
     download_id_from_click,
     resolved_from_response,
@@ -88,7 +87,8 @@ def test_successful_download_url_response():
         "https://catalog.example/game",
     )
     assert str(resolved.url) == "https://cdn.example/demo.zip"
-    assert resolved.size == 10
+    assert resolved.size is None
+    assert resolved.require_attachment is True
 
 
 def test_show_upgrade_response_is_explained():
@@ -121,55 +121,84 @@ def test_browser_flow_controls_delegate_to_download_manager():
 @pytest.mark.asyncio
 async def test_http_419_refreshes_csrf_and_retries(monkeypatch):
     notices = []
-    downloader = BrowserDirectDownloader(SimpleNamespace())
-    page = SimpleNamespace(
-        locator=lambda value: SimpleNamespace(wait_for=lambda **kwargs: _done()),
-        get_by_role=lambda *args, **kwargs: SimpleNamespace(first=SimpleNamespace(click=_done)),
-    )
-    monkeypatch.setattr(downloader, "_find_download_button", _button)
-    monkeypatch.setattr(downloader, "_open_download_dialog", _dialog)
+    downloader = BrowserDirectDownloader(SimpleNamespace(timeout_seconds=1))
+    handlers = {}
+
+    class NativeDownload:
+        suggested_filename = "demo.zip"
+        url = "https://cdn.example/final-demo.zip"
+
+        async def cancel(self):
+            return None
+
+    class Page:
+        def on(self, event, callback):
+            handlers[event] = callback
+
+        def remove_listener(self, event, callback):
+            assert handlers[event] is callback
+
     responses = [
-        SimpleNamespace(status=419),
-        _json_response({"success": True, "download_url": "https://cdn.example/a"}),
+        (419, {"error": "expired"}),
+        (200, {"success": True, "download_url": "https://cdn.example/a"}),
     ]
     refreshes = []
 
-    async def click(*args):
-        return responses.pop(0)
+    async def capture(*args):
+        result = responses.pop(0)
+        if result[0] == 200:
+            handlers["download"](NativeDownload())
+        return result
 
     async def refresh(*args):
         refreshes.append(True)
 
-    monkeypatch.setattr(downloader, "_click_for_response", click)
+    monkeypatch.setattr(downloader, "_capture_generate_response", capture)
     monkeypatch.setattr(downloader, "_refresh_csrf", refresh)
-    monkeypatch.setattr(downloader, "_captcha_is_visible", _false)
-    result = await downloader._generate_url(page, "7", notices.append)
+    result, filename = await downloader._request_download_url(
+        Page(), SimpleNamespace(), "7", notices.append
+    )
     assert result["success"] is True
+    assert filename == "demo.zip"
     assert refreshes == [True]
     assert any("yenileniyor" in item for item in notices)
-
-
-async def _done(*args, **kwargs):
-    return None
-
-
-async def _button(*args, **kwargs):
-    return SimpleNamespace(click=_done)
-
-
-async def _dialog(*args, **kwargs):
-    return SimpleNamespace()
 
 
 async def _false(*args, **kwargs):
     return False
 
 
-def _json_response(payload):
-    async def json():
-        return payload
+@pytest.mark.asyncio
+async def test_generate_response_body_is_captured_before_page_navigation():
+    bindings = {}
+    installed = []
 
-    return SimpleNamespace(status=200, json=json)
+    class Page:
+        async def expose_binding(self, name, callback):
+            bindings[name] = callback
+
+        async def evaluate(self, script, arguments):
+            assert "response.clone().text()" in script
+            installed.append(arguments)
+
+    class Button:
+        async def click(self):
+            binding_name = installed[0]["bindingName"]
+            bindings[binding_name](
+                None,
+                200,
+                '{"success":true,"download_url":"https://cdn.example/demo.zip"}',
+                "https://catalog.example/generate-download-url/4584",
+            )
+
+    downloader = BrowserDirectDownloader(
+        SimpleNamespace(timeout_seconds=1),
+    )
+    status, payload = await downloader._capture_generate_response(Page(), Button(), "4584")
+
+    assert status == 200
+    assert payload["success"] is True
+    assert installed[0]["downloadId"] == "4584"
 
 
 @pytest.mark.asyncio
@@ -179,6 +208,7 @@ async def test_normal_click_response_cancels_native_copy_and_returns_url(monkeyp
 
     class NativeDownload:
         suggested_filename = "demo.zip"
+        url = "https://cdn.example/final-demo.zip"
 
         async def cancel(self):
             cancelled.append(True)
@@ -190,41 +220,24 @@ async def test_normal_click_response_cancels_native_copy_and_returns_url(monkeyp
         def remove_listener(self, event, callback):
             assert handlers[event] is callback
 
-    downloader = BrowserDirectDownloader(SimpleNamespace())
+    downloader = BrowserDirectDownloader(SimpleNamespace(timeout_seconds=1))
 
-    async def click(*args):
+    async def capture(*args):
         handlers["download"](NativeDownload())
-        return _json_response(
-            {"success": True, "download_url": "https://cdn.example/demo.zip"}
+        return (
+            200,
+            {"success": True, "download_url": "https://cdn.example/demo.zip"},
         )
 
-    monkeypatch.setattr(downloader, "_click_for_response", click)
+    monkeypatch.setattr(downloader, "_capture_generate_response", capture)
     payload, filename = await downloader._request_download_url(
         Page(), SimpleNamespace(), "4584", None
     )
 
     assert payload["success"] is True
+    assert payload["download_url"] == "https://cdn.example/final-demo.zip"
     assert filename == "demo.zip"
     assert cancelled == [True]
-
-
-@pytest.mark.asyncio
-async def test_captcha_stops_before_download_url_request(monkeypatch):
-    downloader = BrowserDirectDownloader(SimpleNamespace())
-    page = SimpleNamespace(
-        locator=lambda value: SimpleNamespace(wait_for=lambda **kwargs: _done()),
-        get_by_role=lambda *args, **kwargs: SimpleNamespace(first=SimpleNamespace(click=_done)),
-    )
-    monkeypatch.setattr(downloader, "_find_download_button", _button)
-    monkeypatch.setattr(downloader, "_open_download_dialog", _dialog)
-    monkeypatch.setattr(downloader, "_captcha_is_visible", lambda page: _true())
-
-    with pytest.raises(BrowserDirectError, match="CAPTCHA"):
-        await downloader._generate_url(page, "7", None)
-
-
-async def _true():
-    return True
 
 
 def test_captcha_selector_covers_supported_challenges():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -66,9 +67,12 @@ def resolved_from_response(
         return ResolvedDownload(
             source_id=record.id,
             filename=safe_filename(filename),
-            size=record.size,
+            # Listing metadata is intended for display and is not an exact byte
+            # contract for the generated archive.
+            size=None,
             url=url,
             referer=page_url,
+            require_attachment=True,
         )
     message = payload.get("message") or payload.get("error")
     raise BrowserDirectError(str(message or "Sunucu geçici indirme adresi döndürmedi."))
@@ -189,37 +193,6 @@ class BrowserDirectDownloader:
             with suppress(Exception):
                 await playwright.stop()
 
-    async def _generate_url(self, page: object, download_id: str, notice: NoticeCallback | None):
-        dialog = await self._open_download_dialog(page, notice)
-        button = await self._find_download_button(dialog, download_id)
-        await _notice(notice, f"İndirme kimliği bulundu: {download_id}")
-        if await self._captcha_is_visible(page):
-            raise BrowserDirectError(
-                "İndirme penceresi CAPTCHA veya insan doğrulaması istiyor. "
-                "Otomatik doğrulama yapılmadı."
-            )
-        response = await self._click_for_response(page, button, download_id)
-        await _notice(notice, "Geçici adres isteği gönderildi")
-        await _notice(notice, f"Sunucu HTTP {response.status}")
-        if response.status == 419:
-            await _notice(notice, "CSRF/oturum yenileniyor…")
-            await self._refresh_csrf(page)
-            if await self._captcha_is_visible(page):
-                raise BrowserDirectError(
-                    "CSRF yenilemesinden sonra insan doğrulaması gerekiyor. "
-                    "Otomatik doğrulama yapılmadı."
-                )
-            response = await self._click_for_response(page, button, download_id)
-            await _notice(notice, "CSRF yenilemesinden sonra istek yeniden gönderildi")
-            await _notice(notice, f"Sunucu HTTP {response.status}")
-            if response.status == 419:
-                raise BrowserDirectError("CSRF oturumu yenilenemedi; lütfen yeniden deneyin.")
-        if response.status in {401, 403}:
-            raise UpgradeRequiredError("İndirme için yetkilendirme veya üyelik gerekiyor.")
-        if response.status >= 400:
-            raise BrowserDirectError(f"İndirme servisi HTTP {response.status} döndürdü.")
-        return await response.json()
-
     async def _request_download_url(
         self,
         page: object,
@@ -228,12 +201,17 @@ class BrowserDirectDownloader:
         notice: NoticeCallback | None,
     ) -> tuple[dict[str, object], str | None]:
         loop = asyncio.get_running_loop()
-        suggested: asyncio.Future[str] = loop.create_future()
+        native_download: asyncio.Future[tuple[str, str]] = loop.create_future()
 
         async def cancel_native(download: object) -> None:
             self._active_browser_download = download
-            if not suggested.done():
-                suggested.set_result(safe_filename(download.suggested_filename))
+            if not native_download.done():
+                native_download.set_result(
+                    (
+                        safe_filename(download.suggested_filename),
+                        str(download.url),
+                    )
+                )
             await download.cancel()
 
         def on_download(download: object) -> None:
@@ -241,28 +219,124 @@ class BrowserDirectDownloader:
 
         page.on("download", on_download)
         try:
-            response = await self._click_for_response(page, button, download_id)
+            status, payload = await self._capture_generate_response(
+                page, button, download_id
+            )
             await _notice(notice, "Geçici adres isteği gönderildi")
-            await _notice(notice, f"Sunucu HTTP {response.status}")
-            if response.status == 419:
+            await _notice(notice, f"Sunucu HTTP {status}")
+            if status == 419:
                 await _notice(notice, "CSRF/oturum yenileniyor…")
                 await self._refresh_csrf(page)
-                response = await self._click_for_response(page, button, download_id)
-                await _notice(notice, f"Sunucu HTTP {response.status}")
-                if response.status == 419:
+                status, payload = await self._capture_generate_response(
+                    page, button, download_id
+                )
+                await _notice(notice, f"Sunucu HTTP {status}")
+                if status == 419:
                     raise BrowserDirectError("CSRF oturumu yenilenemedi; yeniden deneyin.")
-            if response.status in {401, 403}:
+            if status in {401, 403}:
                 raise UpgradeRequiredError("İndirme için yetkilendirme veya üyelik gerekiyor.")
-            if response.status >= 400:
-                raise BrowserDirectError(f"İndirme servisi HTTP {response.status} döndürdü.")
-            payload = await response.json()
+            if status >= 400:
+                raise BrowserDirectError(f"İndirme servisi HTTP {status} döndürdü.")
+            if not payload.get("success") or not payload.get("download_url"):
+                return payload, None
             try:
-                filename = await asyncio.wait_for(asyncio.shield(suggested), timeout=1.0)
-            except TimeoutError:
-                filename = None
+                filename, final_url = await asyncio.wait_for(
+                    asyncio.shield(native_download),
+                    timeout=self.options.timeout_seconds,
+                )
+            except TimeoutError as exc:
+                raise BrowserDirectError(
+                    "Tarayıcı gerçek dosya indirmesini başlatmadı."
+                ) from exc
+            # The JSON URL can be an HTML transition page. The Download event URL
+            # is the attachment request Chrome actually selected.
+            payload = dict(payload)
+            payload["download_url"] = final_url
             return payload, filename
         finally:
             page.remove_listener("download", on_download)
+
+    async def _capture_generate_response(
+        self,
+        page: object,
+        button: object,
+        download_id: str,
+    ) -> tuple[int, dict[str, object]]:
+        loop = asyncio.get_running_loop()
+        captured: asyncio.Future[tuple[int, dict[str, object]]] = loop.create_future()
+        binding_name = f"__game_downloader_capture_{id(captured)}"
+
+        def receive_response(
+            _source: object,
+            status: int,
+            body: str,
+            response_url: str,
+        ) -> None:
+            try:
+                payload = json.loads(body)
+                if not isinstance(payload, dict):
+                    raise ValueError("JSON response is not an object")
+                if not captured.done():
+                    captured.set_result((int(status), payload))
+            except Exception as exc:
+                if not captured.done():
+                    captured.set_exception(
+                        BrowserDirectError("İndirme servisi yanıtı okunamadı.")
+                    )
+                logger.warning(
+                    "generate-download-url response capture failed status=%s url=%s "
+                    "body_length=%s",
+                    status,
+                    response_url,
+                    len(body),
+                    exc_info=exc,
+                )
+
+        # Capture a clone inside the page before its own JavaScript can navigate to
+        # the signed URL. Reading Playwright's Response afterwards races with that
+        # navigation and Chromium then discards Network.getResponseBody's resource.
+        await page.expose_binding(binding_name, receive_response)
+        await page.evaluate(
+            """
+            ({ bindingName, downloadId }) => {
+                const wantedPath = `/generate-download-url/${downloadId}`;
+                const originalFetch = window.fetch;
+                window.fetch = async function (...args) {
+                    const response = await originalFetch.apply(this, args);
+                    let pathname = '';
+                    try {
+                        pathname = new URL(response.url, window.location.href).pathname;
+                    } catch (_) {}
+                    if (pathname.endsWith(wantedPath)) {
+                        try {
+                            const body = await response.clone().text();
+                            await window[bindingName](
+                                response.status,
+                                body,
+                                response.url,
+                            );
+                        } finally {
+                            window.fetch = originalFetch;
+                        }
+                    }
+                    return response;
+                };
+            }
+            """,
+            {"bindingName": binding_name, "downloadId": download_id},
+        )
+        click_task = asyncio.create_task(button.click())
+        try:
+            result = await asyncio.wait_for(
+                captured,
+                timeout=self.options.timeout_seconds,
+            )
+            with suppress(Exception):
+                await click_task
+            return result
+        finally:
+            if not click_task.done():
+                click_task.cancel()
 
     @staticmethod
     async def _open_download_dialog(page: object, notice: NoticeCallback | None):
@@ -278,13 +352,6 @@ class BrowserDirectDownloader:
         await dialog.wait_for(state="visible")
         await _notice(notice, "İndirme penceresi açıldı")
         return dialog
-
-    @staticmethod
-    async def _click_for_response(page: object, button: object, download_id: str):
-        endpoint = f"/generate-download-url/{download_id}"
-        async with page.expect_response(lambda response: endpoint in response.url) as pending:
-            await button.click()
-        return await pending.value
 
     @staticmethod
     async def _captcha_is_visible(page: object) -> bool:
