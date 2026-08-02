@@ -43,15 +43,6 @@ class GameRelease(GameEntry):
     source: BrowserDirectSource
 
 
-class RemoteFile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    name: str
-    size: int = Field(ge=0)
-    mime_type: str | None = None
-
-
 class ResolvedDownload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
