@@ -4,10 +4,10 @@ Windows/macOS için PySide6 tabanlı bir web arama ve sıralı parça indirme
 uygulamasıdır. Yalnızca sahibi olduğunuz veya indirmeye açıkça yetkili olduğunuz
 içeriklerde kullanın.
 
-Uygulama yerel veya uzaktan JSON katalog kullanmaz. Yapılandırılan web sitesinde
-arama yapar, seçilen sonucun detay sayfasındaki FuckingFast part bağlantılarını
-bulur ve bu part'ları sırayla indirir. Arşiv çıkarma bu sürümde otomatik olarak
-başlatılmaz.
+Uygulama yapılandırılan web sitesinde arama yapar. HTML elemanlarının `listing`
+özelliğindeki JSON metadatasını okur ve varsa seçilen Download ID için görünür
+bir Chrome/Chromium oturumunda geçici indirme adresi üretir. İndirme seçenekleri
+metadata içinde yoksa oyun sayfasındaki gerçek indirme modalından keşfedilir.
 
 ## Kurulum ve çalıştırma
 
@@ -17,6 +17,7 @@ Python 3.12 veya üstü gerekir.
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 python -m pip install -e .
+playwright install chromium
 authorized-game-downloader
 ```
 
@@ -36,70 +37,51 @@ olarak kullanılır.
 `Oyun ara` alanındaki her sorgu aşağıdaki biçimde gönderilir:
 
 ```text
-GET {web-arama-adresi}/?s={url-encoded-keyword}
+GET {web-arama-adresi}/search/{url-encoded-keyword}
 ```
 
-Arama sonuçlarında yalnızca aşağıdaki yapıya uyan başlık ve bağlantılar kabul
-edilir:
+Her sonuç elemanının `listing` özelliği JSON olmalıdır. Örnek:
 
 ```html
-<header class="entry-header">
-  <div class="entry-meta">...</div>
-  <h1 class="entry-title">
-    <a href="https://site.example/content" rel="bookmark">Content title</a>
-  </h1>
-</header>
+<article listing='{"id":42,"title":"Demo","slug":"demo",
+  "imageurl":"https://site.example/demo.jpg",
+  "coverurl":"https://site.example/demo-cover.jpg","size_gb":1.5,
+  "release_date":"2026-01-01","vote_average":"v1.2.3",
+  "genres":[{"id":1,"name":"Action"}],
+  "downloads":[{"id":4584,"name":"demo.zip","size":1234}]}'></article>
 ```
 
-Sonuç listesinde hem başlık hem de detay URL'si gösterilir. Yalnızca seçilen
+`slug`, `{web-arama-adresi}/game/{slug}` detay URL'sine dönüştürülür. Sonuç
+listesinde başlık, ID, boyut, yayın tarihi, türler, görsel/kapak ve detay URL'si
+gösterilir. Bozuk bir `listing` kaydı uyarı olarak loglanır ve diğer sonuçların
+işlenmesini engellemez. Yalnızca seçilen
 sonucun aynı izinli alan adındaki detay sayfası alınır. Katalog dosyası, katalog
 güncelleme veya katalog içe aktarma akışı yoktur.
 
-## FuckingFast part keşfi
+## Tarayıcıdan doğrudan indirme
 
-Detay sayfasındaki anchor bağlantıları inert HTML olarak ayrıştırılır. Kabul
-edilen bağlantı biçimi:
+**Ayarlar** içinde Chrome çalıştırılabilir dosyası boş bırakılırsa Playwright'ın
+Chromium'u kullanılır. Sistem Google Chrome veya Chrome for Testing kullanılacaksa
+çalıştırılabilir dosyanın tam yolunu girin. Varsayılan mod görünürdür; “Arka planda
+çalıştır” seçeneği headless modu açar. Zaman aşımı 1–300 saniye arasında ve
+indirme klasörü aynı ekrandan ayarlanır. İlk açılışta macOS ve Windows kullanıcısının
+sistem Downloads klasörü seçilir. Aynı değerler sırasıyla
+`GAME_DOWNLOADER_CHROME_EXECUTABLE_PATH`, `GAME_DOWNLOADER_BROWSER_HEADLESS`,
+`GAME_DOWNLOADER_BROWSER_TIMEOUT_SECONDS` ve
+`GAME_DOWNLOADER_DEFAULT_DOWNLOAD_FOLDER` ortam değişkenleriyle de verilebilir.
 
-```text
-https://fuckingfast.co/{id}#{contentName}--_.part001.rar
-```
-
-Geçerli bağlantılar dosya adına göre tekilleştirilir ve `partNNN` numarasına
-göre sıralanır. Başka host'lar, eksik dosya fragment'ları ve güvenli olmayan
-dosya adları yok sayılır.
-
-## FuckingFast indirme akışı
-
-Her part için aynı `httpx.AsyncClient` ve cookie jar kullanılarak şu işlemler
-tamamlanır:
-
-1. Fragment'sız FuckingFast dosya sayfasına `GET` gönderilir.
-2. Sayfadaki tek geçerli `hx-post="/f/<public_file_id>/go"` hedefi bulunur.
-3. Bu endpoint'e `HX-Request: true`, `HX-Current-URL` ve `Referer` başlıklarıyla
-   boş bir `POST` gönderilir.
-4. `200 OK` yanıtındaki `HX-Redirect` başlığının tam olarak HTTPS
-   `dl.fuckingfast.co/dl/<opaque_token>` adresine işaret ettiği doğrulanır.
-5. Bu URL'ye aynı oturumla normal `GET` gönderilir ve yanıt diske stream edilir.
-6. `Content-Disposition: attachment` ve aktarım boyutu doğrulandıktan sonra
-   `.part` geçici dosyası atomik olarak gerçek dosya adına çevrilir.
-
-Bir part tamamen indirilip doğrulanmadan sonraki part'ın sayfasına gidilmez.
-FuckingFast sayfa ve `/go` isteklerine cache/WAF ayrımı için standart, her
-istekte yenilenen bir `X-Request-ID` UUID başlığı eklenir; Postman veya tarayıcı
-User-Agent'i taklit edilmez.
-Tamamlanan part ile sonraki part isteği arasında varsayılan olarak 3 saniye
-beklenir; bu değer Ayarlar bölümünden 0–60 saniye arasında değiştirilebilir.
-Hata halinde tamamlanmış önceki part'lar ve yarım `.part` dosyası korunur. Opaque
-token istemci tarafında üretilmez veya tahmin edilmez.
-
-Uygulama reklam tıklayıcısı çalıştırmaz, CAPTCHA çözmez ve Cloudflare
-doğrulamasını atlatmaz. Sunucu insan/tarayıcı doğrulaması isterse indirme açık
-bir hata ile durur.
+Bir arama sonucu seçilip **İndir** düğmesine basıldığında tarayıcı aynı işlem
+içinde modalı açar, ilk görünür Download kaydını seçer ve indirmeyi başlatır.
+Kullanıcıdan Download ID seçmesi istenmez. Chrome'un normal sayfa akışından alınan
+geçici adres mevcut `DownloadManager` tarafından aktarılır; böylece boyut, yüzde,
+hız ve ETA doğru hesaplanır, hız sınırı ile duraklat/devam çalışır. Chrome penceresi
+işlem boyunca açık kalır. Dosya önce `.part` olarak kaydedilir ve tamamlanınca
+atomik olarak `{ayar-indirme-klasörü}/{contentTitle}/{dosya-adı}` yoluna taşınır.
 
 ## Güvenlik ve dosya davranışı
 
 - Arama ve detay sayfaları yalnızca HTTPS ve açık alan adı listesiyle alınır.
-- FuckingFast sayfa URL'leri ile final download host'u ayrı ayrı doğrulanır.
+- Oyun sayfası ve final download host'u ayrı ayrı doğrulanır.
 - URL içindeki kullanıcı adı/parola, beklenmeyen yönlendirme ve dış host reddedilir.
 - Dosyalar belleğe bütünüyle alınmaz; stream edilerek `<filename>.part` içine yazılır.
 - Var olan tamamlanmış dosyaların üzerine yazılmaz.
@@ -114,9 +96,9 @@ uv run pytest
 ```
 
 Testler canlı servislere bağlanmaz. Yerel HTML fixture'ları ve
-`httpx.MockTransport` ile arama URL'si/seçicileri, part keşfi/sırası, cookie
-oturumu, HTMX POST'u, `HX-Redirect`, attachment ve byte sayısı kontrolleri
-doğrulanır.
+`httpx.MockTransport` ve Playwright taklitleri ile arama URL'si, `listing`
+ayrıştırması, modal Download ID keşfi, CSRF yenilemesi, ilerleme sinyalleri ve
+byte sayısı kontrolleri doğrulanır.
 
 ## Paketleme
 

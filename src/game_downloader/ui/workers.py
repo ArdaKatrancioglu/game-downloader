@@ -7,8 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from game_downloader.download.manager import DownloadCancelled, DownloadManager
-from game_downloader.models import DownloadProgress, FuckingFastSource, ResolvedDownload
-from game_downloader.storage.fuckingfast_download import FuckingFastDownloader
+from game_downloader.models import BrowserDirectSource, DownloadProgress, ResolvedDownload
+from game_downloader.storage.browser_direct import BrowserDirectDownloader
 
 
 class CoroutineWorker(QThread):
@@ -26,67 +26,6 @@ class CoroutineWorker(QThread):
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
-
-
-class FuckingFastWorker(QThread):
-    progress = Signal(object)
-    notice = Signal(str)
-    succeeded = Signal(object)
-    cancelled = Signal(str)
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        downloader: FuckingFastDownloader,
-        source: FuckingFastSource,
-        destination: Path,
-    ) -> None:
-        super().__init__()
-        self.downloader = downloader
-        self.source = source
-        self.destination = destination
-        self.loop: asyncio.AbstractEventLoop | None = None
-
-    def run(self) -> None:
-        async def execute() -> list[Path]:
-            self.loop = asyncio.get_running_loop()
-            return await self.downloader.download(
-                self.source,
-                self.destination,
-                progress=self.progress.emit,
-                notice=self.notice.emit,
-            )
-
-        try:
-            result = asyncio.run(execute())
-        except DownloadCancelled as exc:
-            self.cancelled.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(result)
-        finally:
-            self.loop = None
-
-    def pause_download(self) -> None:
-        if self.loop:
-            self.loop.call_soon_threadsafe(self.downloader.pause)
-
-    def resume_download(self) -> None:
-        if self.loop:
-            self.loop.call_soon_threadsafe(self.downloader.resume)
-
-    def cancel_download(self, *, delete_completed: bool) -> None:
-        if self.loop:
-            self.loop.call_soon_threadsafe(
-                lambda: self.downloader.cancel(delete_completed=delete_completed),
-            )
-
-    def set_speed_limit(self, max_bytes_per_second: int | None) -> None:
-        if self.loop:
-            self.loop.call_soon_threadsafe(
-                lambda: self.downloader.set_speed_limit(max_bytes_per_second),
-            )
 
 
 class DownloadWorker(QThread):
@@ -136,3 +75,59 @@ class DownloadWorker(QThread):
     def cancel_download(self) -> None:
         if self.loop:
             self.loop.call_soon_threadsafe(self.manager.cancel)
+
+
+class BrowserDirectWorker(QThread):
+    progress = Signal(object)
+    notice = Signal(str)
+    succeeded = Signal(object)
+    cancelled = Signal(str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        downloader: BrowserDirectDownloader,
+        source: BrowserDirectSource,
+        destination: Path,
+    ) -> None:
+        super().__init__()
+        self.downloader = downloader
+        self.source = source
+        self.destination = destination
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def run(self) -> None:
+        async def execute() -> Path:
+            self.loop = asyncio.get_running_loop()
+            return await self.downloader.download(
+                self.source, self.destination,
+                progress=self.progress.emit, notice=self.notice.emit,
+            )
+        try:
+            result = asyncio.run(execute())
+        except DownloadCancelled as exc:
+            self.cancelled.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.loop = None
+
+    def pause_download(self) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.downloader.pause)
+
+    def resume_download(self) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.downloader.resume)
+
+    def cancel_download(self) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.downloader.cancel)
+
+    def set_speed_limit(self, max_bytes_per_second: int | None) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: self.downloader.set_speed_limit(max_bytes_per_second)
+            )

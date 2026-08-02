@@ -1,23 +1,22 @@
 import httpx
 import pytest
 
-from game_downloader.web_search import InternetSearchProvider, _parse_release_heading
+from game_downloader.web_search import InternetSearchProvider
 
 
 @pytest.mark.asyncio
-async def test_web_search_uses_s_query_and_entry_header_contract():
+async def test_web_search_uses_path_and_listing_json_contract():
     requests: list[httpx.Request] = []
     search_html = """
     <html><body>
-      <header class="entry-header">
-        <div class="entry-meta">Published</div>
-        <h1 class="entry-title">
-          <a href="/demo-game/" rel="bookmark">Demo Game</a>
-        </h1>
-      </header>
-      <header class="entry-header">
-        <h1 class="entry-title"><a href="/missing-meta/">Ignored</a></h1>
-      </header>
+      <article listing="{&quot;id&quot;:&quot;42&quot;,&quot;title&quot;:&quot;Demo Game&quot;,
+        &quot;slug&quot;:&quot;demo-game&quot;,
+        &quot;imageurl&quot;:&quot;https://catalog.example/demo.jpg&quot;,
+        &quot;coverurl&quot;:&quot;https://catalog.example/cover.jpg&quot;,
+        &quot;size_gb&quot;:1.5,&quot;release_date&quot;:&quot;2026-01-02&quot;,
+        &quot;vote_average&quot;:&quot;v1.2.3&quot;,
+        &quot;genres&quot;:[{&quot;id&quot;:1,&quot;name&quot;:&quot;Action&quot;}],
+        &quot;downloads&quot;:[{&quot;id&quot;:4584,&quot;name&quot;:&quot;demo.zip&quot;}]}"></article>
     </body></html>
     """
 
@@ -33,31 +32,32 @@ async def test_web_search_uses_s_query_and_entry_header_contract():
         )
         results = await provider.search("Demo Game")
 
-    assert requests[0].url.path == "/"
-    assert requests[0].url.query == b"s=Demo+Game"
+    assert requests[0].url.path == "/search/Demo Game"
+    assert requests[0].url.raw_path == b"/search/Demo%20Game"
+    assert requests[0].url.query == b""
     assert [(result.title, str(result.detail_url)) for result in results] == [
-        ("Demo Game", "https://catalog.example/demo-game/")
+        ("Demo Game", "https://catalog.example/game/demo-game")
     ]
+    assert results[0].id == "42"
+    assert results[0].archive_size == round(1.5 * 1024**3)
+    assert results[0].version == "v1.2.3"
+    assert str(results[0].image_url) == "https://catalog.example/demo.jpg"
+    assert str(results[0].cover_url) == "https://catalog.example/cover.jpg"
+    assert results[0].genres == [{"id": 1, "name": "Action"}]
+    assert results[0].source.downloads[0].id == "4584"
 
 
 @pytest.mark.asyncio
-async def test_selected_result_extracts_deduplicates_and_sorts_fuckingfast_parts():
+async def test_search_returns_all_valid_listings_and_skips_invalid(caplog):
     search_html = """
-    <header class="entry-header">
-      <div class="entry-meta">Published</div>
-      <h1 class="entry-title"><a href="/demo/">Demo</a></h1>
-    </header>
-    """
-    detail_html = """
-    <a href="https://example.invalid/not-a-part">Ignore</a>
-    <a href="https://fuckingfast.co/file002#Demo--_.part002.rar">Part 2</a>
-    <a href="https://fuckingfast.co/file001#Demo--_.part001.rar">Part 1</a>
-    <a href="https://fuckingfast.co/file001#Demo--_.part001.rar">Duplicate</a>
+    <div listing='{"id":1,"title":"One","slug":"one","runtime":"20 GB"}'></div>
+    <div listing='not-json'></div>
+    <div></div>
+    <div listing='{"id":2,"title":"Two","slug":"two","runtime":"512 MB"}'></div>
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        html = search_html if request.url.path == "/" else detail_html
-        return httpx.Response(200, text=html, request=request)
+        return httpx.Response(200, text=search_html, request=request)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = InternetSearchProvider(
@@ -65,19 +65,38 @@ async def test_selected_result_extracts_deduplicates_and_sorts_fuckingfast_parts
             ["catalog.example"],
             client=client,
         )
-        results = await provider.search("Demo")
-        release = await provider.get_release(results[0].id)
+        with caplog.at_level("WARNING"):
+            results = await provider.search("Demo")
 
-    assert release.source.type == "fuckingfast"
-    assert [part.part_number for part in release.source.parts] == [1, 2]
-    assert [part.filename for part in release.source.parts] == [
-        "Demo--_.part001.rar",
-        "Demo--_.part002.rar",
-    ]
+    assert [result.title for result in results] == ["One", "Two"]
+    assert [result.archive_size for result in results] == [20 * 1024**3, 512 * 1024**2]
+    assert "Skipping invalid listing metadata" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_web_search_skips_external_result_links():
+async def test_release_without_embedded_downloads_stays_browser_direct():
+    requests = []
+    html = '<div listing=\'{"id":1,"title":"One","slug":"one"}\'></div>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text=html, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = InternetSearchProvider(
+            "https://catalog.example/", ["catalog.example"], client=client
+        )
+        results = await provider.search("One")
+        release = await provider.get_release(results[0].id)
+
+    assert release.source.type == "browser_direct"
+    assert release.source.downloads == []
+    assert str(release.source.page_url) == "https://catalog.example/game/one"
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_old_entry_header_search_markup_is_not_parsed():
     html = """
     <header class="entry-header">
       <div class="entry-meta">Published</div>
@@ -96,71 +115,3 @@ async def test_web_search_skips_external_result_links():
             client=client,
         )
         assert await provider.search("Demo") == []
-
-
-def test_detail_parser_rejects_links_without_required_filename_fragment():
-    with pytest.raises(ValueError, match="FuckingFast part"):
-        InternetSearchProvider._find_fuckingfast_parts(
-            '<a href="https://fuckingfast.co/file001">Missing fragment</a>'
-        )
-
-
-def test_detail_parser_keeps_all_archive_sets_and_only_turkish_optional_file():
-    names = [
-        "content.part01.rar",
-        "fg-tll.part01.rar",
-        "fg-tll.part02.rar",
-        "fg-u4.part01.rar",
-        "fg-u4.part02.rar",
-        "fg-optional-french.bin",
-        "fg-optional-turkish.bin",
-        "fg-u4-optional-russian.bin",
-        "fg-u4-optional-turkish.bin",
-    ]
-    html = "".join(
-        f'<a href="https://fuckingfast.co/file{index:03d}#{name}">{name}</a>'
-        for index, name in enumerate(names, start=1)
-    )
-
-    parts = InternetSearchProvider._find_fuckingfast_parts(html)
-
-    assert [part.filename for part in parts] == [
-        "content.part01.rar",
-        "fg-tll.part01.rar",
-        "fg-tll.part02.rar",
-        "fg-u4.part01.rar",
-        "fg-u4.part02.rar",
-        "fg-optional-turkish.bin",
-        "fg-u4-optional-turkish.bin",
-    ]
-
-
-def test_release_heading_uses_en_dash_as_title_version_separator():
-    assert _parse_release_heading("The Last Light – V1.2.3 + Bonus") == (
-        "The Last Light",
-        "v1.2.3",
-    )
-    assert _parse_release_heading("Title without version") == (
-        "Title without version",
-        "Unknown",
-    )
-    assert _parse_release_heading(
-        "Demo Game – Deluxe Edition, v1.0.21.23831 + 4 DLCs/Bonuses"
-    ) == ("Demo Game", "v1.0.21.23831")
-
-
-def test_release_heading_keeps_only_first_version_before_slash():
-    assert _parse_release_heading(
-        "Marvel’s Spider-Man 2: Digital Deluxe Edition, "
-        "v1.130.1.0/v1.131.0.0 + 2 DLCs + Unlocker + Bonus Soundtrack"
-    ) == (
-        "Marvel’s Spider-Man 2: Digital Deluxe Edition",
-        "v1.130.1.0",
-    )
-    assert _parse_release_heading(
-        "ELDEN RING: Shadow of the Erdtree Deluxe Edition, "
-        "v1.12/v1.12.1 + 9 DLCs/Bonuses + Windows 7 Fix"
-    ) == (
-        "ELDEN RING: Shadow of the Erdtree Deluxe Edition",
-        "v1.12",
-    )

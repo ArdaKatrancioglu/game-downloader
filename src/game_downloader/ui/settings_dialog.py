@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -33,24 +33,31 @@ class SettingsDialog(QDialog):
         folder_row = QHBoxLayout()
         folder_row.addWidget(self.download_folder)
         folder_row.addWidget(folder_browse)
+        self.chrome_path = QLineEdit(
+            str(settings.chrome_executable_path) if settings.chrome_executable_path else ""
+        )
+        chrome_browse = QPushButton("Gözat")
+        chrome_browse.clicked.connect(self._browse_chrome)
+        chrome_row = QHBoxLayout()
+        chrome_row.addWidget(self.chrome_path)
+        chrome_row.addWidget(chrome_browse)
+        self.browser_headless = QCheckBox("Arka planda çalıştır")
+        self.browser_headless.setChecked(settings.browser_headless)
+        self.browser_timeout = QSpinBox()
+        self.browser_timeout.setRange(1, 300)
+        self.browser_timeout.setSuffix(" sn")
+        self.browser_timeout.setValue(round(settings.browser_timeout_seconds))
 
         self.max_size = QSpinBox()
         self.max_size.setRange(1, 10_000)
         self.max_size.setValue(max(1, settings.max_extracted_archive_size // 1024**3))
-        self.part_delay_min = QSpinBox()
-        self.part_delay_min.setRange(0, 300)
-        self.part_delay_min.setSuffix(" sn")
-        self.part_delay_min.setValue(round(settings.fuckingfast_part_delay_min_seconds))
-        self.part_delay_max = QSpinBox()
-        self.part_delay_max.setRange(0, 300)
-        self.part_delay_max.setSuffix(" sn")
-        self.part_delay_max.setValue(round(settings.fuckingfast_part_delay_max_seconds))
         form = QFormLayout()
         form.addRow("Web arama adresi", self.web_search_url)
         form.addRow("İzin verilen site alan adları", self.allowed_domains)
         form.addRow("İndirme klasörü", folder_row)
-        form.addRow("Part arası bekleme (min)", self.part_delay_min)
-        form.addRow("Part arası bekleme (max)", self.part_delay_max)
+        form.addRow("Chrome çalıştırılabilir dosyası", chrome_row)
+        form.addRow("Tarayıcı modu", self.browser_headless)
+        form.addRow("Tarayıcı zaman aşımı", self.browser_timeout)
         form.addRow("Maksimum çıkarma (GiB)", self.max_size)
 
         buttons = QDialogButtonBox(
@@ -69,16 +76,13 @@ class SettingsDialog(QDialog):
         if path:
             self.download_folder.setText(path)
 
+    def _browse_chrome(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chrome çalıştırılabilir dosyası")
+        if path:
+            self.chrome_path.setText(path)
+
     def _save_settings(self) -> None:
         from pathlib import Path
-
-        if self.part_delay_min.value() > self.part_delay_max.value():
-            QMessageBox.warning(
-                self,
-                "Geçersiz bekleme aralığı",
-                "Minimum bekleme, maksimum beklemeden büyük olamaz.",
-            )
-            return
 
         updated = self.settings.model_copy(
             update={
@@ -89,8 +93,12 @@ class SettingsDialog(QDialog):
                     if value.strip()
                 ],
                 "default_download_folder": Path(self.download_folder.text()).expanduser(),
-                "fuckingfast_part_delay_min_seconds": float(self.part_delay_min.value()),
-                "fuckingfast_part_delay_max_seconds": float(self.part_delay_max.value()),
+                "chrome_executable_path": (
+                    Path(self.chrome_path.text()).expanduser()
+                    if self.chrome_path.text().strip() else None
+                ),
+                "browser_headless": self.browser_headless.isChecked(),
+                "browser_timeout_seconds": float(self.browser_timeout.value()),
                 "max_extracted_archive_size": self.max_size.value() * 1024**3,
             }
         )

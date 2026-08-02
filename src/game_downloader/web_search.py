@@ -1,25 +1,22 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
-from hashlib import sha256
-from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
+from html import unescape
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
 from game_downloader.http_diagnostics import HttpTrace
 from game_downloader.models import (
-    FuckingFastPart,
-    FuckingFastSource,
+    BrowserDirectSource,
+    BrowserDownloadRecord,
     GameEntry,
     GameRelease,
 )
-from game_downloader.security import (
-    SecurityError,
-    validate_fuckingfast_part_url,
-    validate_https_url,
-)
+from game_downloader.security import validate_https_url
 
 logger = logging.getLogger(__name__)
 WEB_REQUEST_HEADERS = {
@@ -29,7 +26,7 @@ WEB_REQUEST_HEADERS = {
 
 
 class InternetSearchProvider:
-    """Search a configured website and resolve its FuckingFast part links."""
+    """Search listing metadata for games handled by the browser-direct provider."""
 
     def __init__(
         self,
@@ -53,7 +50,7 @@ class InternetSearchProvider:
         self._results: dict[str, GameEntry] = {}
 
     def search_url(self, query: str) -> str:
-        return f"{self.base_url}?{urlencode({'s': query.strip()})}"
+        return urljoin(self.base_url, f"search/{quote(query.strip(), safe='')}")
 
     async def _get(self, url: str) -> httpx.Response:
         validate_https_url(
@@ -110,50 +107,90 @@ class InternetSearchProvider:
             return []
         response = await self._get(self.search_url(query))
         soup = BeautifulSoup(response.text, "html.parser")
-        parsed = self._parse_entry_headers(soup)
+        parsed = self._parse_listing_items(soup)
         if not parsed:
             logger.warning(
                 "Web search response contains no usable "
-                "header.entry-header h1.entry-title > a results."
+                "elements with valid listing JSON results."
             )
         self._results = {entry.id: entry for entry in parsed}
         return parsed
 
-    def _parse_entry_headers(self, soup: BeautifulSoup) -> list[GameEntry]:
+    def _parse_listing_items(self, soup: BeautifulSoup) -> list[GameEntry]:
         results: list[GameEntry] = []
-        seen_urls: set[str] = set()
-        for header in soup.select("header.entry-header"):
-            if not isinstance(header, Tag) or header.select_one(".entry-meta") is None:
+        seen: set[str] = set()
+        for node in soup.select("[listing]"):
+            if not isinstance(node, Tag):
                 continue
-            link = header.select_one("h1.entry-title > a[href]")
-            if not isinstance(link, Tag):
-                continue
-            title = str(link.get_text(" ", strip=True) or link.get("title", "")).strip()
-            if not title:
-                continue
-            detail_url = urljoin(self.base_url, str(link["href"]))
             try:
-                validate_https_url(
-                    detail_url,
-                    self.allowed_hosts,
-                    allow_local_http=self.allow_local_http,
-                )
-            except SecurityError as exc:
-                logger.warning("Skipping external web search result: %s", exc)
+                raw_listing = unescape(str(node.get("listing", "")))
+                payload = json.loads(raw_listing)
+                if not isinstance(payload, dict):
+                    continue
+                entry = self._entry_from_listing(payload)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                logger.warning("Skipping invalid listing metadata", exc_info=True)
                 continue
-            if detail_url in seen_urls:
-                continue
-            seen_urls.add(detail_url)
-            result_id = sha256(detail_url.encode("utf-8")).hexdigest()[:32]
-            results.append(
-                GameEntry(
-                    id=result_id,
-                    title=title,
-                    detail_url=detail_url,
-                    source_name="FuckingFast",
-                )
-            )
+            if entry.id not in seen:
+                seen.add(entry.id)
+                results.append(entry)
         return results
+
+    def _entry_from_listing(self, data: dict[str, object]) -> GameEntry:
+        def first(*keys: str) -> object | None:
+            for key in keys:
+                if data.get(key) not in (None, ""):
+                    return data[key]
+            return None
+
+        slug = str(first("slug") or "").strip().strip("/")
+        title = str(first("title", "name", "game_title") or "").strip()
+        raw_id = first("id")
+        if raw_id is None or not title or not slug:
+            raise ValueError("listing requires id, title and slug")
+        detail_url = urljoin(self.base_url, f"game/{quote(slug, safe='')}")
+        validate_https_url(
+            detail_url, self.allowed_hosts, allow_local_http=self.allow_local_http
+        )
+        game_id = str(raw_id)
+        archive_size = _size_in_bytes(
+            first("size_gb", "runtime", "size_bytes", "archive_size", "size"),
+            is_gb=first("size_gb") is not None,
+        )
+        raw_downloads = first("downloads", "download_records", "downloadRecords") or []
+        downloads: list[BrowserDownloadRecord] = []
+        if isinstance(raw_downloads, list):
+            for record in raw_downloads:
+                if not isinstance(record, dict):
+                    continue
+                record_id = record.get("id") or record.get("download_id")
+                if record_id is not None:
+                    downloads.append(BrowserDownloadRecord(
+                        id=str(record_id),
+                        name=str(
+                            record.get("name")
+                            or record.get("title")
+                            or f"Download {record_id}"
+                        ),
+                        size=record.get("size") if isinstance(record.get("size"), int) else None,
+                    ))
+        source = BrowserDirectSource(page_url=detail_url, downloads=downloads)
+        raw_genres = first("genres")
+        genres = raw_genres if isinstance(raw_genres, list) else []
+        return GameEntry(
+            id=game_id,
+            title=title,
+            version=str(first("vote_average", "version") or "Unknown"),
+            description=str(first("description", "excerpt") or ""),
+            archive_size=archive_size,
+            image_url=first("imageurl", "image_url", "image", "thumbnail"),
+            cover_url=first("coverurl", "cover_url"),
+            release_date=str(first("release_date", "releaseDate", "date") or "") or None,
+            genres=genres,
+            detail_url=detail_url,
+            source_name="Browser Direct",
+            source=source,
+        )
 
     async def get_release(self, game_id: str) -> GameRelease:
         try:
@@ -162,72 +199,24 @@ class InternetSearchProvider:
             raise LookupError("Son web aramasındaki sonuçlardan birini seçin.") from exc
         if entry.detail_url is None:
             raise ValueError("Seçilen arama sonucunda detay bağlantısı yok.")
-        response = await self._get(str(entry.detail_url))
-        parts = self._find_fuckingfast_parts(response.text)
-        title, version = _parse_release_heading(entry.title)
-        return GameRelease(
-            **entry.model_dump(exclude={"source", "title", "version"}),
-            title=title,
-            version=version,
-            source=FuckingFastSource(parts=parts),
-        )
-
-    @staticmethod
-    def _find_fuckingfast_parts(html: str) -> list[FuckingFastPart]:
-        soup = BeautifulSoup(html, "html.parser")
-        parts: list[FuckingFastPart] = []
-        seen_filenames: set[str] = set()
-        for link in soup.find_all("a", href=True):
-            href = str(link["href"]).strip()
-            try:
-                filename, part_number = validate_fuckingfast_part_url(href)
-            except (SecurityError, ValueError):
-                continue
-            if filename in seen_filenames:
-                continue
-            seen_filenames.add(filename)
-            parts.append(
-                FuckingFastPart(
-                    page_url=href,
-                    filename=filename,
-                    part_number=part_number,
-                )
-            )
-        if not parts:
-            raise ValueError("Seçilen sayfada geçerli bir FuckingFast part bağlantısı yok.")
-        filtered = [
-            part
-            for part in parts
-            if "optional" not in part.filename.casefold()
-            or "turkish" in part.filename.casefold()
-        ]
-        if not filtered:
-            raise ValueError("Sayfada zorunlu veya Türkçe içerik dosyası bulunamadı.")
-        return sorted(
-            filtered,
-            key=lambda part: (
-                "optional" in part.filename.casefold(),
-                _natural_key(part.filename),
-            ),
-        )
+        if entry.source is None:
+            raise ValueError("Seçilen sonuçta browser-direct kaynağı yok.")
+        return GameRelease(**entry.model_dump())
 
 
-def _parse_release_heading(value: str) -> tuple[str, str]:
-    version_match = re.search(
-        r"(?i)(?:^|[\s,])v(?P<version>\d+(?:\.\d+)*)\b",
-        value,
-    )
-    if version_match is None:
-        return value.strip(), "Unknown"
-    title_prefix = value[: version_match.start()].rstrip(" ,")
-    title = title_prefix.split("–", 1)[0].strip()
-    if not title:
-        return value.strip(), "Unknown"
-    return title, f"v{version_match.group('version')}"
-
-
-def _natural_key(value: str) -> tuple[object, ...]:
-    return tuple(
-        int(part) if part.isdigit() else part.casefold()
-        for part in re.split(r"(\d+)", value)
-    )
+def _size_in_bytes(value: object, *, is_gb: bool) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value < 0:
+            return None
+        return round(value * 1024**3) if is_gb else round(value)
+    if isinstance(value, str):
+        match = re.search(r"(?i)(\d+(?:[.,]\d+)?)\s*(TB|GB|MB|KB|B)?", value)
+        if match is None:
+            return None
+        amount = float(match.group(1).replace(",", "."))
+        unit = (match.group(2) or ("GB" if is_gb else "B")).upper()
+        multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+        return round(amount * multiplier[unit])
+    return None

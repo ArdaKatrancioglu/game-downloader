@@ -3,31 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
-class FuckingFastPart(BaseModel):
+class BrowserDownloadRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(min_length=1, max_length=200)
+    name: str = Field(default="Download", max_length=500)
+    size: int | None = Field(default=None, ge=0)
+
+
+class BrowserDirectSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    type: Literal["browser_direct"] = "browser_direct"
     page_url: HttpUrl
-    filename: str = Field(min_length=1, max_length=500)
-    part_number: int = Field(ge=0)
-
-    @model_validator(mode="after")
-    def page_and_filename_are_safe(self) -> FuckingFastPart:
-        from game_downloader.security import validate_fuckingfast_part_url
-
-        filename, part_number = validate_fuckingfast_part_url(str(self.page_url))
-        if self.filename != filename or self.part_number != part_number:
-            raise ValueError("FuckingFast part metadata does not match its URL.")
-        return self
-
-
-class FuckingFastSource(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["fuckingfast"] = "fuckingfast"
-    parts: list[FuckingFastPart] = Field(min_length=1)
+    downloads: list[BrowserDownloadRecord] = Field(default_factory=list)
 
 
 class GameEntry(BaseModel):
@@ -38,13 +30,17 @@ class GameEntry(BaseModel):
     version: str = Field(default="Unknown", max_length=100)
     description: str = Field(default="", max_length=4000)
     archive_size: int | None = Field(default=None, ge=0)
-    source_name: str = "FuckingFast"
+    image_url: HttpUrl | None = None
+    cover_url: HttpUrl | None = None
+    release_date: str | None = Field(default=None, max_length=100)
+    genres: list[dict[str, object] | str] = Field(default_factory=list)
+    source_name: str = "Browser Direct"
     detail_url: HttpUrl | None = None
-    source: FuckingFastSource | None = None
+    source: BrowserDirectSource | None = None
 
 
 class GameRelease(GameEntry):
-    source: FuckingFastSource
+    source: BrowserDirectSource
 
 
 class RemoteFile(BaseModel):
@@ -75,18 +71,6 @@ class DownloadProgress(BaseModel):
     percent: float | None
     bytes_per_second: float
     eta_seconds: float | None
-
-
-class MultipartDownloadProgress(BaseModel):
-    part_index: int = Field(ge=1)
-    part_count: int = Field(ge=1)
-    part_filename: str
-    part: DownloadProgress
-    completed_bytes: int = Field(ge=0)
-    estimated_total_bytes: int | None = Field(default=None, ge=0)
-    total_percent: float | None = None
-    total_eta_seconds: float | None = Field(default=None, ge=0)
-    total_is_estimate: bool = True
 
 
 class ExtractionLimits(BaseModel):

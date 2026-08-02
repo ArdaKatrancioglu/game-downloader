@@ -15,6 +15,7 @@ dependencies = [
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
   "PySide6>=6.7",
+  "playwright>=1.48",
 ]
 
 [project.optional-dependencies]
@@ -47,4 +48,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 [tool.ruff.lint.per-file-ignores]
 "src/game_downloader/download/manager.py" = ["ASYNC230", "ASYNC240"]
 "src/game_downloader/archive/extractor.py" = ["ASYNC230", "ASYNC240"]
-"src/game_downloader/storage/fuckingfast_download.py" = ["ASYNC230", "ASYNC240"]
+"src/game_downloader/storage/browser_direct.py" = ["ASYNC230", "ASYNC240"]

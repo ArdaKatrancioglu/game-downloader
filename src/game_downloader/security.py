@@ -4,15 +4,13 @@ import ipaddress
 import re
 import socket
 from collections.abc import Iterable
-from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 class SecurityError(ValueError):
     """Raised when an external value violates an explicit security boundary."""
 
 
-_CONTENT_ID = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
-_FUCKINGFAST_PART_NUMBER = re.compile(r"\.part(?P<number>\d+)\.rar$", re.IGNORECASE)
 _TOKEN_PATTERN = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)(\S+)")
 _SENSITIVE_QUERY = {
     "t",
@@ -49,27 +47,6 @@ def validate_https_url(
     if host not in allowed:
         raise SecurityError(f"Unexpected domain: {host}")
     return url
-
-
-def validate_fuckingfast_part_url(value: str) -> tuple[str, int]:
-    parsed = urlsplit(value)
-    host = normalized_host(parsed.hostname)
-    path_parts = [part for part in parsed.path.split("/") if part]
-    if (
-        parsed.scheme != "https"
-        or host not in {"fuckingfast.co", "www.fuckingfast.co"}
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or len(path_parts) != 1
-        or not _CONTENT_ID.fullmatch(path_parts[0])
-    ):
-        raise SecurityError("Geçersiz FuckingFast parça bağlantısı.")
-    filename = unquote(parsed.fragment)
-    if not filename or safe_filename(filename) != filename:
-        raise SecurityError("FuckingFast bağlantısında geçerli bir dosya adı yok.")
-    match = _FUCKINGFAST_PART_NUMBER.search(filename)
-    return filename, int(match.group("number")) if match else 0
 
 
 def safe_folder_name(name: str) -> str:
