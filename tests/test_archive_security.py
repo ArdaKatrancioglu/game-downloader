@@ -97,6 +97,30 @@ def test_zip_prefers_7zip_when_available(monkeypatch, tmp_path):
     assert calls == ["7zip"]
 
 
+def test_zip_does_not_rescan_long_extracted_paths_after_7zip(monkeypatch, tmp_path):
+    archive = tmp_path / "long-path.zip"
+    write_zip(archive, [("game/data.bin", b"payload")])
+    destination = tmp_path / "output"
+
+    def extract_with_7zip(_archive, target):
+        (target / "game").mkdir()
+        (target / "game" / "data.bin").write_bytes(b"payload")
+
+    extractor = ArchiveExtractor()
+    monkeypatch.setattr(extractor, "_find_seven_zip", lambda: "/tools/7z")
+    monkeypatch.setattr(extractor, "_extract_7zip", extract_with_7zip)
+    monkeypatch.setattr(
+        extractor,
+        "_validate_extracted_tree",
+        lambda _target: pytest.fail("ZIP output must not be rescanned with pathlib"),
+    )
+
+    result = extractor.extract(archive, destination)
+
+    assert result.file_count == 1
+    assert (destination / "game" / "data.bin").read_bytes() == b"payload"
+
+
 def test_bundled_7zip_is_preferred_in_frozen_app(monkeypatch, tmp_path):
     executable = tmp_path / ".7zip" / "7z.exe"
     executable.parent.mkdir()

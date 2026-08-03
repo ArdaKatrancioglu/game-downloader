@@ -101,18 +101,36 @@ class ArchiveExtractor:
             destination.rmdir()
         members = self.list_contents(archive)
         total_size = sum(item.size for item in members if not item.is_directory)
+        file_count = sum(not item.is_directory for item in members)
+        longest_member = max(members, key=lambda item: len(item.name), default=None)
+        logger.info(
+            "Archive preflight completed files=%d total_size=%d longest_member_length=%d "
+            "longest_member=%r",
+            file_count,
+            total_size,
+            len(longest_member.name) if longest_member else 0,
+            longest_member.name if longest_member else "",
+        )
         if progress:
             progress(0, total_size)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(
             tempfile.mkdtemp(prefix=f".{destination.name}.extracting-", dir=destination.parent)
         )
+        kind = _archive_kind(archive)
+        logger.info(
+            "Archive extraction workspace created kind=%s destination=%s temporary=%s "
+            "destination_path_length=%d temporary_path_length=%d",
+            kind,
+            destination,
+            temporary,
+            len(str(destination)),
+            len(str(temporary)),
+        )
         try:
-            kind = _archive_kind(archive)
             if kind == "zip":
                 if self._find_seven_zip() is not None:
                     self._extract_7zip(archive, temporary)
-                    self._validate_extracted_tree(temporary)
                 else:
                     try:
                         self._extract_zip(archive, temporary, progress, total_size)
@@ -124,7 +142,10 @@ class ArchiveExtractor:
                         shutil.rmtree(temporary, ignore_errors=True)
                         temporary.mkdir(parents=True)
                         self._extract_7zip(archive, temporary)
-                        self._validate_extracted_tree(temporary)
+                logger.info(
+                    "ZIP post-extraction path scan skipped; member paths and sizes were "
+                    "validated before extraction"
+                )
             elif kind == "tar":
                 self._extract_tar(archive, temporary, progress, total_size)
             elif kind == "rar":
@@ -135,13 +156,23 @@ class ArchiveExtractor:
                 self._validate_extracted_tree(temporary)
             if progress:
                 progress(total_size, total_size)
+            logger.info(
+                "Moving extracted archive into final destination source=%s destination=%s",
+                temporary,
+                destination,
+            )
             os.replace(temporary, destination)
         except Exception:
             logger.exception(
-                "Archive extraction failed archive=%s destination=%s temporary=%s",
+                "Archive extraction failed kind=%s archive=%s destination=%s temporary=%s "
+                "archive_path_length=%d destination_path_length=%d temporary_path_length=%d",
+                kind,
                 archive,
                 destination,
                 temporary,
+                len(str(archive)),
+                len(str(destination)),
+                len(str(temporary)),
             )
             shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -310,6 +341,7 @@ class ArchiveExtractor:
             [executable, "x", "-y", f"-o{target}", "--", str(archive)],
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
             timeout=3600,
         )
@@ -324,7 +356,13 @@ class ArchiveExtractor:
                 f"7-Zip could not extract the archive (exit {process.returncode}): "
                 f"{detail}"
             )
-        logger.info("Archive extraction tool completed tool=7-Zip exit_code=0")
+        logger.info(
+            "Archive extraction tool completed tool=7-Zip exit_code=0 "
+            "archive_path_length=%d target_path_length=%d detail=%r",
+            len(str(archive)),
+            len(str(target)),
+            _process_detail(process),
+        )
 
     def _extract_rar(self, archive: Path, target: Path) -> None:
         unrar = shutil.which("unrar")
