@@ -121,6 +121,21 @@ bilgisayarda Python, Playwright veya Chrome kurulması gerekmez. Gömülü Chrom
 nedeniyle EXE büyük olur ve ilk açılışta geçici klasöre çıkarılması zaman alabilir.
 Windows çıktısını Windows üzerinde, macOS çıktısını macOS üzerinde üretin.
 
+### Windows'ta tek EXE oluşturma
+
+Repoyu Windows bilgisayara klonladıktan sonra proje klasöründe PowerShell açın
+ve aşağıdaki bloğu doğrudan kopyalayıp çalıştırın:
+
+```powershell
+winget install --id astral-sh.uv --exact --accept-package-agreements --accept-source-agreements
+$env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+git pull
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+```
+
+İşlem tamamlandığında taşınabilir çıktı `dist\IpsumIndirici.exe` konumunda
+olur. `uv` zaten kuruluysa ilk iki komut atlanabilir.
+
 macOS geliştiricileri GitHub'daki **Actions > Windows EXE > Run workflow**
 akışını çalıştırabilir. İş tamamlandığında **IpsumIndirici-Windows** artifact'ı
 indirilir; içindeki EXE hedef bilgisayarda Python veya Chrome kurulumu gerektirmez.
