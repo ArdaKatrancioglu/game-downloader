@@ -67,7 +67,9 @@ class DownloadProgress(BaseModel):
 class ExtractionLimits(BaseModel):
     max_total_size: int = Field(default=50 * 1024**3, gt=0)
     max_files: int = Field(default=100_000, gt=0)
-    max_compression_ratio: float = Field(default=1000.0, gt=1)
+    # Trusted game archives can legitimately contain highly compressible files.
+    # Keep this opt-in for callers that need ZIP-bomb protection.
+    max_compression_ratio: float | None = Field(default=None, gt=1)
 
 
 class ExtractionResult(BaseModel):

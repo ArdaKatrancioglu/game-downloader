@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         self.image_request_token = 0
         self.active_provider = None
         self.active_download_worker: BrowserDirectWorker | None = None
+        self.cancellation_pending = False
         self.workers: set[CoroutineWorker | BrowserDirectWorker | ExtractionWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
         self.setWindowTitle("Ipsum İndirici")
@@ -442,6 +443,8 @@ class MainWindow(QMainWindow):
         self.total_eta_label.setText("Toplam kalan süre: hesaplanıyor…")
         self.pause_button.setEnabled(True)
         self.cancel_button.setEnabled(True)
+        self.cancellation_pending = False
+        self.pause_button.setProperty("paused", False)
         self._set_browsing_enabled(False)
         self._start_worker(worker)
 
@@ -458,6 +461,7 @@ class MainWindow(QMainWindow):
         )
 
     def _direct_download_progress(self, value: object) -> None:
+        self._enable_transfer_controls()
         progress = DownloadProgress.model_validate(value)
         phases = 3 if self.settings.auto_extract_zip else 1
         percent = "—" if progress.percent is None else f"%{progress.percent:.1f}"
@@ -682,6 +686,7 @@ class MainWindow(QMainWindow):
 
     def _finish_download_controls(self) -> None:
         self.active_download_worker = None
+        self.cancellation_pending = False
         self.search_button.setEnabled(True)
         self.select_button.setEnabled(self.results.currentRow() >= 0)
         self.results.setEnabled(True)
@@ -690,8 +695,15 @@ class MainWindow(QMainWindow):
         self.limit_speed_spin.setEnabled(self.limit_speed_checkbox.isChecked())
         self.pause_button.setEnabled(False)
         self.pause_button.setText("Duraklat")
+        self.pause_button.setProperty("paused", False)
         self.cancel_button.setEnabled(False)
         self.select_button.setText("İndir")
+
+    def _enable_transfer_controls(self) -> None:
+        if self.active_download_worker is None or self.cancellation_pending:
+            return
+        self.pause_button.setEnabled(True)
+        self.cancel_button.setEnabled(True)
 
     def _set_browsing_enabled(self, enabled: bool) -> None:
         self.search_card.setEnabled(enabled)
@@ -753,6 +765,7 @@ class MainWindow(QMainWindow):
         if dialog.clickedButton() is not confirm:
             return
         worker.cancel_download()
+        self.cancellation_pending = True
         self.pause_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
         self.status.setText("İndirme iptal ediliyor; yarım dosya korunacak…")

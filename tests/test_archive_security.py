@@ -110,6 +110,14 @@ def test_rejects_archive_bomb_ratio(tmp_path):
         extractor.list_contents(archive)
 
 
+def test_default_limits_allow_high_compression_ratio(tmp_path):
+    archive = tmp_path / "high-ratio.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr("zeros.bin", b"\0" * 100_000)
+
+    assert ArchiveExtractor().list_contents(archive)[0].name == "zeros.bin"
+
+
 def test_rejects_existing_nonempty_destination_even_with_overwrite(tmp_path):
     archive = tmp_path / "safe.zip"
     write_zip(archive, [("file.txt", b"new")])

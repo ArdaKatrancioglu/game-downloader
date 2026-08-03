@@ -34,14 +34,14 @@ class AppSettings(BaseSettings):
         extra="ignore",
     )
 
-    web_search_url: str | None = None
+    web_search_url: str = "https://ankergames.net/"
     allowed_search_domains: list[str] = Field(default_factory=list)
     default_download_folder: Path = Field(default_factory=system_download_folder)
     chrome_executable_path: Path | None = None
-    browser_headless: bool = False
+    browser_headless: bool = True
     browser_timeout_seconds: float = Field(default=30.0, ge=1, le=300)
-    auto_extract_zip: bool = False
-    max_extracted_archive_size: int = 50 * 1024**3
+    auto_extract_zip: bool = True
+    max_extracted_archive_size: int = 200 * 1024**3
     max_extracted_file_count: int = 100_000
     log_level: str = "INFO"
 

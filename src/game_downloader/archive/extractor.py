@@ -147,20 +147,22 @@ class ArchiveExtractor:
         if len(files) > self.limits.max_files:
             raise ArchiveError("The archive contains too many files.")
         total = 0
+        ratio_limit = self.limits.max_compression_ratio
         for member in members:
             _safe_member_path(member.name)
             total += member.size
-            if member.compressed_size == 0 and member.size > 0:
-                ratio = float("inf")
-            elif member.compressed_size:
-                ratio = member.size / member.compressed_size
-            else:
-                ratio = 1.0
-            if ratio > self.limits.max_compression_ratio:
-                raise ArchiveError("The archive has a suspicious compression ratio.")
+            if ratio_limit is not None:
+                if member.compressed_size == 0 and member.size > 0:
+                    ratio = float("inf")
+                elif member.compressed_size:
+                    ratio = member.size / member.compressed_size
+                else:
+                    ratio = 1.0
+                if ratio > ratio_limit:
+                    raise ArchiveError("The archive has a suspicious compression ratio.")
         if total > self.limits.max_total_size:
             raise ArchiveError("The archive exceeds the configured extracted-size limit.")
-        if archive_size and total / archive_size > self.limits.max_compression_ratio:
+        if ratio_limit is not None and archive_size and total / archive_size > ratio_limit:
             raise ArchiveError("The archive has a suspicious overall compression ratio.")
 
     @staticmethod
