@@ -110,17 +110,21 @@ class ArchiveExtractor:
         try:
             kind = _archive_kind(archive)
             if kind == "zip":
-                try:
-                    self._extract_zip(archive, temporary, progress, total_size)
-                except (FileNotFoundError, NotImplementedError, RuntimeError) as exc:
-                    logger.warning(
-                        "Python ZIP extraction is unavailable; trying 7-Zip fallback: %s",
-                        exc,
-                    )
-                    shutil.rmtree(temporary, ignore_errors=True)
-                    temporary.mkdir(parents=True)
+                if self._find_seven_zip() is not None:
                     self._extract_7zip(archive, temporary)
                     self._validate_extracted_tree(temporary)
+                else:
+                    try:
+                        self._extract_zip(archive, temporary, progress, total_size)
+                    except (FileNotFoundError, NotImplementedError, RuntimeError) as exc:
+                        logger.warning(
+                            "Python ZIP extraction is unavailable; trying 7-Zip fallback: %s",
+                            exc,
+                        )
+                        shutil.rmtree(temporary, ignore_errors=True)
+                        temporary.mkdir(parents=True)
+                        self._extract_7zip(archive, temporary)
+                        self._validate_extracted_tree(temporary)
             elif kind == "tar":
                 self._extract_tar(archive, temporary, progress, total_size)
             elif kind == "rar":
@@ -224,6 +228,16 @@ class ArchiveExtractor:
                             progress(extracted, total_size)
 
     def _seven_zip(self) -> str:
+        executable = self._find_seven_zip()
+        if not executable:
+            raise ArchiveError(
+                "7-Zip/7zz is required for this archive's compression method. Install it from "
+                "https://www.7-zip.org/ and try again."
+            )
+        return executable
+
+    @staticmethod
+    def _find_seven_zip() -> str | None:
         frozen_root = getattr(sys, "_MEIPASS", None)
         bundled_candidates = []
         if frozen_root:
@@ -234,11 +248,6 @@ class ArchiveExtractor:
         if not executable and os.name == "nt":
             executable = _first_existing(
                 _windows_program_paths("7-Zip", "7z.exe")
-            )
-        if not executable:
-            raise ArchiveError(
-                "7-Zip/7zz is required for this archive's compression method. Install it from "
-                "https://www.7-zip.org/ and try again."
             )
         return executable
 

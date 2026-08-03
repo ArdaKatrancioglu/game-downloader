@@ -61,6 +61,7 @@ def test_unsupported_zip_method_falls_back_to_7zip(monkeypatch, tmp_path):
         (target / "game" / "data.bin").write_bytes(b"payload")
 
     extractor = ArchiveExtractor()
+    monkeypatch.setattr(extractor, "_find_seven_zip", lambda: None)
     monkeypatch.setattr(extractor, "_extract_zip", unsupported)
     monkeypatch.setattr(extractor, "_extract_7zip", extract_with_7zip)
 
@@ -69,6 +70,31 @@ def test_unsupported_zip_method_falls_back_to_7zip(monkeypatch, tmp_path):
     assert calls
     assert (destination / "game" / "data.bin").read_bytes() == b"payload"
     assert result.total_size == len(b"payload")
+
+
+def test_zip_prefers_7zip_when_available(monkeypatch, tmp_path):
+    archive = tmp_path / "long-path.zip"
+    write_zip(archive, [("game/data.bin", b"payload")])
+    destination = tmp_path / "output"
+    calls = []
+
+    def extract_with_7zip(_archive, target):
+        calls.append("7zip")
+        (target / "game").mkdir()
+        (target / "game" / "data.bin").write_bytes(b"payload")
+
+    extractor = ArchiveExtractor()
+    monkeypatch.setattr(extractor, "_find_seven_zip", lambda: "/tools/7z")
+    monkeypatch.setattr(extractor, "_extract_7zip", extract_with_7zip)
+    monkeypatch.setattr(
+        extractor,
+        "_extract_zip",
+        lambda *args, **kwargs: pytest.fail("Python ZIP extractor must not run"),
+    )
+
+    extractor.extract(archive, destination)
+
+    assert calls == ["7zip"]
 
 
 def test_bundled_7zip_is_preferred_in_frozen_app(monkeypatch, tmp_path):
