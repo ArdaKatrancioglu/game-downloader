@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from game_downloader.models import BrowserDirectSource, BrowserDownloadRecord, DownloadProgress
+from game_downloader.storage import browser_direct
 from game_downloader.storage.browser_direct import (
     CAPTCHA_SELECTOR,
     DOWNLOAD_DIALOG_SELECTOR,
@@ -11,6 +12,21 @@ from game_downloader.storage.browser_direct import (
     download_id_from_click,
     resolved_from_response,
 )
+
+
+def test_bundled_browser_is_found_inside_pyinstaller_bundle(tmp_path, monkeypatch):
+    executable = (
+        tmp_path
+        / ".playwright-browsers"
+        / "chromium-1234"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.setattr(browser_direct.sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    assert browser_direct._bundled_browser(headless=False) == executable
 
 
 def test_download_modal_selector_is_specific():

@@ -114,11 +114,13 @@ uv sync --extra packaging
 uv run pyinstaller ipsum_indirici.spec
 ```
 
-Windows'ta `scripts/build_windows.ps1` çalıştırıldığında Python, PySide6 ve
-diğer çalışma zamanı bağımlılıklarını içeren tek bir
-`dist/IpsumIndirici.exe` üretilir. Windows çıktısını Windows üzerinde,
-macOS çıktısını macOS üzerinde üretin.
+Windows'ta `scripts/build_windows.ps1` çalıştırıldığında Python, PySide6,
+`uv.lock` ile eşleşen Playwright Chromium ve diğer çalışma zamanı
+bağımlılıklarını içeren tek bir `dist/IpsumIndirici.exe` üretilir. Hedef
+bilgisayarda Python, Playwright veya Chrome kurulması gerekmez. Gömülü Chromium
+nedeniyle EXE büyük olur ve ilk açılışta geçici klasöre çıkarılması zaman alabilir.
+Windows çıktısını Windows üzerinde, macOS çıktısını macOS üzerinde üretin.
 
 macOS geliştiricileri GitHub'daki **Actions > Windows EXE > Run workflow**
 akışını çalıştırabilir. İş tamamlandığında **IpsumIndirici-Windows** artifact'ı
-indirilir; içindeki EXE hedef bilgisayarda Python kurulumu gerektirmez.
+indirilir; içindeki EXE hedef bilgisayarda Python veya Chrome kurulumu gerektirmez.

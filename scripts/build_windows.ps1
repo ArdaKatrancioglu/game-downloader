@@ -10,6 +10,12 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 
 uv sync --extra dev --extra packaging --frozen
 
+# Download the Chromium revision pinned by uv.lock into a project-local folder.
+# PyInstaller embeds this folder in the one-file executable below.
+$BrowserBundle = Join-Path $ProjectRoot ".build-assets\playwright-browsers"
+$env:PLAYWRIGHT_BROWSERS_PATH = $BrowserBundle
+uv run playwright install chromium
+
 uv run ruff check .
 uv run pytest
 uv run pyinstaller --noconfirm --clean ipsum_indirici.spec

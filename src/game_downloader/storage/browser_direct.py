@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import sys
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -424,7 +425,10 @@ async def _notice(callback: NoticeCallback | None, message: str) -> None:
 
 
 def _bundled_browser(headless: bool) -> Path | None:
-    root = Path.cwd() / ".playwright-browsers"
+    roots = [Path.cwd() / ".playwright-browsers"]
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        roots.insert(0, Path(frozen_root) / ".playwright-browsers")
     patterns = (
         ("chromium-*/**/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",)
         if not headless
@@ -436,8 +440,9 @@ def _bundled_browser(headless: bool) -> Path | None:
         "chromium_headless_shell-*/**/chrome-headless-shell",
         "chromium_headless_shell-*/**/chrome-headless-shell.exe",
     )
-    for pattern in patterns:
-        candidates = sorted(path for path in root.glob(pattern) if path.is_file())
-        if candidates:
-            return candidates[-1]
+    for root in roots:
+        for pattern in patterns:
+            candidates = sorted(path for path in root.glob(pattern) if path.is_file())
+            if candidates:
+                return candidates[-1]
     return None
