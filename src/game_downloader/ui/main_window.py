@@ -984,9 +984,9 @@ def _available_extraction_destination(archive: Path) -> Path:
             break
     if not name:
         name = "archive"
-    candidate = archive.parent / f"{name}-extracted"
+    candidate = archive.parent / name
     index = 2
     while candidate.exists():
-        candidate = archive.parent / f"{name}-extracted ({index})"
+        candidate = archive.parent / f"{name} ({index})"
         index += 1
     return candidate

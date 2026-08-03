@@ -9,6 +9,7 @@ import pytest
 from game_downloader.archive.extractor import (
     ArchiveError,
     ArchiveExtractor,
+    _subprocess_creation_flags,
     detect_archive_kind,
 )
 from game_downloader.models import ExtractionLimits
@@ -144,11 +145,30 @@ def test_detects_imported_browser_download_by_signature(tmp_path):
 def test_extraction_destination_preserves_existing_output(tmp_path):
     archive = tmp_path / "owned.release.rar"
     archive.write_bytes(b"Rar!\x1a\x07\x01\x00")
-    (tmp_path / "owned.release-extracted").mkdir()
+    (tmp_path / "owned.release").mkdir()
 
     assert _available_extraction_destination(archive) == (
-        tmp_path / "owned.release-extracted (2)"
+        tmp_path / "owned.release (2)"
     )
+
+
+def test_extraction_destination_uses_archive_name_without_extracted_suffix(tmp_path):
+    archive = tmp_path / "Bills-Must-Be-Paid-AnkerGames.zip"
+
+    assert _available_extraction_destination(archive) == (
+        tmp_path / "Bills-Must-Be-Paid-AnkerGames"
+    )
+
+
+def test_windows_subprocesses_do_not_open_a_console(monkeypatch):
+    monkeypatch.setattr("game_downloader.archive.extractor.os.name", "nt")
+    monkeypatch.setattr(
+        "game_downloader.archive.extractor.subprocess.CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    assert _subprocess_creation_flags() == 0x08000000
 
 
 @pytest.mark.parametrize("name", ["../escape.txt", "/absolute.txt", "C:\\escape.txt"])

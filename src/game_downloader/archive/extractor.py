@@ -295,6 +295,7 @@ class ArchiveExtractor:
             text=True,
             check=False,
             timeout=60,
+            creationflags=_subprocess_creation_flags(),
         )
         if process.returncode:
             detail = _process_detail(process)
@@ -344,6 +345,7 @@ class ArchiveExtractor:
             errors="replace",
             check=False,
             timeout=3600,
+            creationflags=_subprocess_creation_flags(),
         )
         if process.returncode:
             detail = _process_detail(process)
@@ -394,6 +396,7 @@ class ArchiveExtractor:
                 text=True,
                 check=False,
                 timeout=3600,
+                creationflags=_subprocess_creation_flags(),
             )
             if process.returncode == 0:
                 logger.info("Archive extraction tool completed tool=unrar exit_code=0")
@@ -456,6 +459,12 @@ def _process_detail(process: subprocess.CompletedProcess[str]) -> str:
     if not normalized:
         return "no diagnostic output"
     return normalized[-1000:]
+
+
+def _subprocess_creation_flags() -> int:
+    if os.name == "nt":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
 
 
 def _windows_program_paths(folder: str, executable: str) -> list[Path]:
