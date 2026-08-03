@@ -328,6 +328,83 @@ async def test_browser_context_closes_cleanly_on_download_error(tmp_path):
     assert events == ["context-closed", "browser-closed", "playwright-stopped"]
 
 
+@pytest.mark.asyncio
+async def test_browser_closes_before_http_download_starts(tmp_path, monkeypatch):
+    events = []
+
+    class Page:
+        url = "https://catalog.example/game"
+
+        def set_default_timeout(self, value): pass
+        async def goto(self, *args, **kwargs): pass
+
+    class Context:
+        async def new_page(self): return Page()
+        async def close(self): events.append("context-closed")
+
+    class Browser:
+        async def new_context(self, **kwargs): return Context()
+        async def close(self): events.append("browser-closed")
+
+    class Chromium:
+        async def launch(self, **kwargs): return Browser()
+
+    class Runtime:
+        chromium = Chromium()
+
+    class Playwright:
+        async def start(self): return Runtime()
+        async def stop(self): events.append("playwright-stopped")
+
+    class Manager:
+        async def download(self, *args, **kwargs):
+            events.append("http-download-started")
+            return tmp_path / "demo.zip"
+
+    downloader = BrowserDirectDownloader(
+        SimpleNamespace(headless=False, executable_path=None, timeout_seconds=1),
+        manager=Manager(),
+        playwright_factory=Playwright,
+    )
+    monkeypatch.setattr(downloader, "_captcha_is_visible", _false)
+    monkeypatch.setattr(downloader, "_open_download_dialog", _return_dialog)
+    monkeypatch.setattr(downloader, "_first_download_button", _return_button)
+    monkeypatch.setattr(
+        downloader,
+        "_request_download_url",
+        _return_download_payload,
+    )
+    source = BrowserDirectSource(
+        page_url="https://catalog.example/game",
+        downloads=[BrowserDownloadRecord(id="7", name="demo.zip")],
+    )
+
+    await downloader.download(source, tmp_path)
+
+    assert events == [
+        "context-closed",
+        "browser-closed",
+        "playwright-stopped",
+        "http-download-started",
+    ]
+
+
+async def _return_dialog(*args, **kwargs):
+    return object()
+
+
+async def _return_button(*args, **kwargs):
+    return SimpleNamespace(wait_for=_noop), "7"
+
+
+async def _return_download_payload(*args, **kwargs):
+    return {"success": True, "download_url": "https://cdn.example/demo.zip"}, "demo.zip"
+
+
+async def _noop(*args, **kwargs):
+    return None
+
+
 def test_browser_worker_transfers_progress_signal(tmp_path):
     from game_downloader.ui.workers import BrowserDirectWorker
 

@@ -80,7 +80,7 @@ def resolved_from_response(
 
 
 class BrowserDirectDownloader:
-    """Keep Chrome alive while its first visible modal download is saved."""
+    """Use Chrome to resolve a download URL, then stream it without Chrome."""
 
     def __init__(
         self,
@@ -172,6 +172,11 @@ class BrowserDirectDownloader:
                 record = record.model_copy(update={"name": suggested_filename})
             resolved = resolved_from_response(payload, record, str(source.page_url))
             await _notice(notice, "Geçici indirme adresi alındı")
+            await _notice(notice, "Tarayıcı kapatılıyor…")
+            await _close_browser_resources(context, browser, playwright)
+            context = None
+            browser = None
+            playwright = None
             await _notice(notice, f"İndirme başladı: {resolved.filename}")
             result = await self.manager.download(
                 resolved,
@@ -185,14 +190,7 @@ class BrowserDirectDownloader:
             raise BrowserDirectError("Tarayıcı işlemi zaman aşımına uğradı.") from exc
         finally:
             self._active_browser_download = None
-            if context is not None:
-                with suppress(Exception):
-                    await context.close()
-            if browser is not None:
-                with suppress(Exception):
-                    await browser.close()
-            with suppress(Exception):
-                await playwright.stop()
+            await _close_browser_resources(context, browser, playwright)
 
     async def _request_download_url(
         self,
@@ -422,6 +420,22 @@ async def _notice(callback: NoticeCallback | None, message: str) -> None:
         result = callback(message)
         if isinstance(result, Awaitable):
             await result
+
+
+async def _close_browser_resources(
+    context: object | None,
+    browser: object | None,
+    playwright: object | None,
+) -> None:
+    if context is not None:
+        with suppress(Exception):
+            await context.close()
+    if browser is not None:
+        with suppress(Exception):
+            await browser.close()
+    if playwright is not None:
+        with suppress(Exception):
+            await playwright.stop()
 
 
 def _bundled_browser(headless: bool) -> Path | None:

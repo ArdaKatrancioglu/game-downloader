@@ -525,15 +525,21 @@ class MainWindow(QMainWindow):
 
     def _download_failed(self, message: str) -> None:
         self._reset_download_progress()
+        self._clear_selected_result()
         self._finish_download_controls()
         self._show_error(message)
 
     def _download_cancelled(self, message: str) -> None:
         self._reset_download_progress()
+        self._clear_selected_result()
         self._finish_download_controls()
-        self.current_release = None
-        self._reset_selected_metadata()
         self.status.setText(message)
+
+    def _clear_selected_result(self) -> None:
+        self.current_release = None
+        self.results.clearSelection()
+        self.results.setCurrentRow(-1)
+        self._reset_selected_metadata()
 
     def _reset_selected_metadata(self) -> None:
         self.image_request_token += 1
