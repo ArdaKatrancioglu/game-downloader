@@ -115,10 +115,11 @@ uv run pyinstaller ipsum_indirici.spec
 ```
 
 Windows'ta `scripts/build_windows.ps1` çalıştırıldığında Python, PySide6,
-`uv.lock` ile eşleşen Playwright Chromium ve diğer çalışma zamanı
+`uv.lock` ile eşleşen Playwright Chromium, 7-Zip ve diğer çalışma zamanı
 bağımlılıklarını içeren tek bir `dist/IpsumIndirici.exe` üretilir. Hedef
-bilgisayarda Python, Playwright veya Chrome kurulması gerekmez. Gömülü Chromium
-nedeniyle EXE büyük olur ve ilk açılışta geçici klasöre çıkarılması zaman alabilir.
+bilgisayarda Python, Playwright, Chrome, WinRAR veya 7-Zip kurulması gerekmez.
+Gömülü Chromium nedeniyle EXE büyük olur ve ilk açılışta geçici klasöre
+çıkarılması zaman alabilir.
 Windows çıktısını Windows üzerinde, macOS çıktısını macOS üzerinde üretin.
 
 ### Windows'ta tek EXE oluşturma

@@ -46,6 +46,45 @@ def test_zip_extraction_reports_byte_progress(tmp_path):
     assert reported[-1] == (len(payload), len(payload))
 
 
+def test_unsupported_zip_method_falls_back_to_7zip(monkeypatch, tmp_path):
+    archive = tmp_path / "unsupported-method.zip"
+    write_zip(archive, [("game/data.bin", b"payload")])
+    destination = tmp_path / "output"
+    calls = []
+
+    def unsupported(*args, **kwargs):
+        raise NotImplementedError("That compression method is not supported")
+
+    def extract_with_7zip(_archive, target):
+        calls.append((_archive, target))
+        (target / "game").mkdir()
+        (target / "game" / "data.bin").write_bytes(b"payload")
+
+    extractor = ArchiveExtractor()
+    monkeypatch.setattr(extractor, "_extract_zip", unsupported)
+    monkeypatch.setattr(extractor, "_extract_7zip", extract_with_7zip)
+
+    result = extractor.extract(archive, destination)
+
+    assert calls
+    assert (destination / "game" / "data.bin").read_bytes() == b"payload"
+    assert result.total_size == len(b"payload")
+
+
+def test_bundled_7zip_is_preferred_in_frozen_app(monkeypatch, tmp_path):
+    executable = tmp_path / ".7zip" / "7z.exe"
+    executable.parent.mkdir()
+    executable.touch()
+    monkeypatch.setattr(
+        "game_downloader.archive.extractor.sys._MEIPASS",
+        str(tmp_path),
+        raising=False,
+    )
+    monkeypatch.setattr("game_downloader.archive.extractor.shutil.which", lambda _name: None)
+
+    assert ArchiveExtractor()._seven_zip() == str(executable)
+
+
 def test_detects_imported_browser_download_by_signature(tmp_path):
     archive = tmp_path / "browser-download-without-extension"
     write_zip(archive, [("readme.txt", b"authorized")])
