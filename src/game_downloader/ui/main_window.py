@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import QRectF, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QDesktopServices, QFont, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -345,7 +345,11 @@ class MainWindow(QMainWindow):
         self.results.setEnabled(True)
         self.results.clear()
         for entry in self.entries:
-            self.results.addItem(QListWidgetItem(entry.title))
+            item = QListWidgetItem(entry.title)
+            font = QFont(self.results.font())
+            font.setBold(True)
+            item.setFont(font)
+            self.results.addItem(item)
         self._prefetch_result_images(self.entries)
         self.select_button.setEnabled(bool(self.entries))
         if self.entries:
@@ -365,7 +369,9 @@ class MainWindow(QMainWindow):
         self.version_label.setText(entry.version)
         self.size_label.setText(_format_bytes(entry.archive_size))
         self.link_label.setText(str(entry.detail_url or "—"))
-        self.overview_label.setText(entry.description or "—")
+        self.overview_label.setText(
+            _truncate_description(entry.description) or "—"
+        )
 
     def _select_result(self) -> None:
         row = self.results.currentRow()
@@ -395,7 +401,9 @@ class MainWindow(QMainWindow):
         self.version_label.setText(self.current_release.version)
         self.size_label.setText(_format_bytes(self.current_release.archive_size))
         self.link_label.setText(str(self.current_release.detail_url or "—"))
-        self.overview_label.setText(self.current_release.description or "—")
+        self.overview_label.setText(
+            _truncate_description(self.current_release.description) or "—"
+        )
         self._download_browser_direct()
 
     def _prepare_failed(self, message: str) -> None:
@@ -612,12 +620,13 @@ class MainWindow(QMainWindow):
     def _resize_poster_canvas(self) -> None:
         """Scale the poster canvas with the available selected-card space."""
         available_width = max(190, int(self.details_card.width() * 0.4))
-        available_height = max(285, self.details_card.height() - 120)
-        poster_width = min(440, available_width, available_height * 2 // 3)
+        available_height = max(285, self.details_card.height())
+        poster_width = min(available_width, available_height * 2 // 3)
         poster_width = max(190, poster_width)
         poster_height = poster_width * 3 // 2
         if self.image_preview.width() != poster_width:
             self.image_preview.setFixedSize(poster_width, poster_height)
+        self._scale_metadata_fonts(poster_width)
         if self.poster_pixmap is not None:
             self.image_preview.setText("")
             scaled = self.poster_pixmap.scaled(
@@ -639,6 +648,20 @@ class MainWindow(QMainWindow):
             painter.drawPixmap(x, y, scaled)
             painter.end()
             self.image_preview.setPixmap(rounded)
+
+    def _scale_metadata_fonts(self, poster_width: int) -> None:
+        """Slightly enlarge metadata text as the poster grows."""
+        scale = min(2.0, max(1.0, poster_width / 190 * 0.35 + 0.65))
+        for label in self.details_card.findChildren(QLabel):
+            if label.objectName() == "metadataTitle":
+                base_size = 14
+            elif label.objectName() == "metadataValue":
+                base_size = 13
+            else:
+                continue
+            # The theme's font-size rule overrides QLabel.setFont(), so apply
+            # the calculated size through an inline stylesheet.
+            label.setStyleSheet(f"font-size: {base_size * scale:.1f}px;")
 
     def _reset_download_progress(self) -> None:
         self.part_progress.setRange(0, 100)
@@ -877,11 +900,20 @@ def _format_bytes(value: int | None) -> str:
     if value is None:
         return "Bilinmiyor"
     amount = float(value)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if amount < 1024 or unit == "TiB":
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if amount < 1024 or unit == "TB":
             return f"{amount:.1f} {unit}"
         amount /= 1024
     return "Bilinmiyor"
+
+
+def _truncate_description(text: str, limit: int = 150) -> str:
+    """Shorten descriptions for display without changing the stored value."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    shortened = text[:limit].rsplit(" ", 1)[0]
+    return shortened + "…"
 
 
 def _format_speed(bytes_per_second: float) -> str:

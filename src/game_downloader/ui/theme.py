@@ -67,7 +67,7 @@ QFrame#headerCard {
 QLabel#pageTitle {
     color: @text@;
     font-size: 28px;
-    font-weight: 700;
+    font-weight: bold;
 }
 QLabel#mutedLabel {
     color: @muted@;
