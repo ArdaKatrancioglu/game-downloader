@@ -1,4 +1,5 @@
 import logging
+import ssl
 
 import httpx
 
@@ -55,3 +56,27 @@ def test_http_403_trace_includes_diagnostics_and_redacts_secrets(caplog):
     assert "BODY_SECRET" not in output
     assert "DIRECT_SECRET" not in output
     assert "REFERER_SECRET" not in output
+
+
+def test_tls_transport_failure_logs_full_traceback_and_cause_chain(caplog):
+    trace = HttpTrace(
+        logging.getLogger("test.http"),
+        "download",
+        "GET",
+        "https://download.example/file",
+    )
+    try:
+        try:
+            raise ssl.SSLCertVerificationError("certificate verify failed")
+        except ssl.SSLCertVerificationError as cause:
+            raise httpx.ConnectError("TLS handshake failed") from cause
+    except httpx.ConnectError as error:
+        with caplog.at_level(logging.ERROR):
+            trace.exception(error)
+
+    output = caplog.text
+    assert "Exception diagnostic operation=http-transport:download" in output
+    assert "exception:ConnectError(TLS handshake failed)" in output
+    assert "cause:SSLCertVerificationError" in output
+    assert "certificate verify failed" in output
+    assert "The above exception was the direct cause" in output

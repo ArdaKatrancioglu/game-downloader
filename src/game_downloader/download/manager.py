@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import logging
 import os
 import shutil
+import ssl
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
@@ -13,6 +15,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from game_downloader.download.progress import ProgressTracker
+from game_downloader.error_diagnostics import log_exception
 from game_downloader.http_diagnostics import (
     HttpTrace,
     is_cloudflare_challenge,
@@ -56,6 +59,8 @@ class DownloadManager:
         resolve_hosts: bool = True,
         max_bytes_per_second: int | None = None,
     ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         if max_bytes_per_second is not None and max_bytes_per_second <= 0:
             raise ValueError("max_bytes_per_second must be positive when set")
         self._client = client
@@ -158,12 +163,37 @@ class DownloadManager:
                     break
                 except DownloadCancelled:
                     raise
-                except (httpx.NetworkError, httpx.TimeoutException) as exc:
+                except Exception as exc:
+                    if not _is_retryable_connection_error(exc):
+                        raise
+                    attempt_number = attempt + 1
+                    log_exception(
+                        logger,
+                        f"download-connection-attempt-{attempt_number}",
+                        exc,
+                    )
                     if attempt + 1 >= self.max_attempts:
                         raise DownloadError(
                             "The download was interrupted. The partial file was kept for resume."
                         ) from exc
-                    await asyncio.sleep(2**attempt)
+                    next_attempt = attempt_number + 1
+                    delay = 2**attempt
+                    logger.warning(
+                        "Download connection retry scheduled failed_attempt=%d "
+                        "next_attempt=%d max_attempts=%d delay_seconds=%d error_type=%s",
+                        attempt_number,
+                        next_attempt,
+                        self.max_attempts,
+                        delay,
+                        type(exc).__name__,
+                    )
+                    if notice:
+                        await _call(
+                            notice,
+                            "SSL/TLS veya ağ bağlantısı kesildi. "
+                            f"Yeniden deneniyor ({next_attempt}/{self.max_attempts})…",
+                        )
+                    await asyncio.sleep(delay)
             self._validate_size(part, resolved.size)
             if resolved.checksum_sha256:
                 self._validate_checksum(part, resolved.checksum_sha256)
@@ -360,6 +390,39 @@ def _response_total(
         return None
     content_length = response.headers.get("content-length")
     return existing + int(content_length) if content_length and content_length.isdigit() else None
+
+
+_RETRYABLE_CONNECTION_ERRNOS = {
+    errno.ECONNABORTED,
+    errno.ECONNREFUSED,
+    errno.ECONNRESET,
+    errno.EHOSTUNREACH,
+    errno.ENETDOWN,
+    errno.ENETRESET,
+    errno.ENETUNREACH,
+    errno.EPIPE,
+    errno.ETIMEDOUT,
+}
+
+
+def _is_retryable_connection_error(exc: BaseException) -> bool:
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (httpx.TransportError, ssl.SSLError, ConnectionError)):
+            return True
+        if isinstance(current, OSError) and current.errno in _RETRYABLE_CONNECTION_ERRNOS:
+            return True
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None and not current.__suppress_context__:
+            pending.append(current.__context__)
+        pending.extend(item for item in current.args if isinstance(item, BaseException))
+    return False
 
 
 async def _call(callback: Callable, value: object) -> None:

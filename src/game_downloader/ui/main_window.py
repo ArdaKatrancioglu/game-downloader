@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from game_downloader.archive.extractor import ArchiveExtractor
 from game_downloader.download.manager import DownloadManager
+from game_downloader.error_diagnostics import log_exception
 from game_downloader.models import (
     BrowserDirectSource,
     DownloadProgress,
@@ -46,6 +48,8 @@ from game_downloader.ui.workers import (
     fetch_images,
 )
 from game_downloader.web_search import InternetSearchProvider
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -333,6 +337,7 @@ class MainWindow(QMainWindow):
         try:
             self.active_provider = self._provider()
         except ValueError as exc:
+            log_exception(logger, "create-search-provider", exc)
             self._show_error(str(exc))
             return
         worker = CoroutineWorker(lambda: self.active_provider.search(query))
@@ -902,6 +907,7 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.theme_path)))
 
     def _show_error(self, message: str) -> None:
+        logger.error("User-facing error dialog message=%s", message)
         self.status.setText("İşlem durdu")
         QMessageBox.warning(self, "Hata", message)
 

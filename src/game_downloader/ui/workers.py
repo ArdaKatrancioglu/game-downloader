@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -10,8 +11,11 @@ from PySide6.QtCore import QThread, Signal
 from game_downloader.archive.extractor import ArchiveExtractor
 from game_downloader.download.manager import DownloadCancelled, DownloadManager
 from game_downloader.download.progress import ProgressTracker
+from game_downloader.error_diagnostics import log_exception
 from game_downloader.models import BrowserDirectSource, DownloadProgress, ResolvedDownload
 from game_downloader.storage.browser_direct import BrowserDirectDownloader
+
+logger = logging.getLogger(__name__)
 
 
 class CoroutineWorker(QThread):
@@ -26,6 +30,7 @@ class CoroutineWorker(QThread):
         try:
             result = asyncio.run(self.operation())
         except Exception as exc:  # The UI boundary intentionally converts errors to short text.
+            log_exception(logger, "coroutine-worker", exc)
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
@@ -60,6 +65,7 @@ class ExtractionWorker(QThread):
                 progress=report,
             )
         except Exception as exc:
+            log_exception(logger, "archive-extraction", exc)
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
@@ -134,6 +140,7 @@ class DownloadWorker(QThread):
         try:
             result = asyncio.run(execute())
         except Exception as exc:
+            log_exception(logger, "download-worker", exc)
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
@@ -184,6 +191,7 @@ class BrowserDirectWorker(QThread):
         except DownloadCancelled as exc:
             self.cancelled.emit(str(exc))
         except Exception as exc:
+            log_exception(logger, "browser-direct-download", exc)
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)

@@ -1,5 +1,6 @@
 import gzip
 import hashlib
+import ssl
 
 import httpx
 import pytest
@@ -197,6 +198,66 @@ async def test_interrupted_stream_retries_with_range(tmp_path, monkeypatch):
         ).download(resolved(), tmp_path)
     assert result.read_bytes() == b"abcdef"
     assert delays == [1]
+
+
+@pytest.mark.asyncio
+async def test_tls_failure_retries_three_times_then_succeeds(tmp_path, monkeypatch):
+    calls = 0
+    delays = []
+    notices = []
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            try:
+                raise ssl.SSLError("TLS connection closed")
+            except ssl.SSLError as cause:
+                raise httpx.ConnectError("handshake failed", request=request) from cause
+        return httpx.Response(200, content=b"abcdef", request=request)
+
+    async def fake_sleep(value):
+        delays.append(value)
+
+    monkeypatch.setattr("game_downloader.download.manager.asyncio.sleep", fake_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await DownloadManager(
+            client=client,
+            resolve_hosts=False,
+            max_attempts=3,
+        ).download(resolved(), tmp_path, notice=notices.append)
+
+    assert result.read_bytes() == b"abcdef"
+    assert calls == 3
+    assert delays == [1, 2]
+    assert any("(2/3)" in notice for notice in notices)
+    assert any("(3/3)" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_tls_failure_is_shown_after_retry_threshold(tmp_path, monkeypatch):
+    calls = 0
+    delays = []
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        raise ssl.SSLError("TLS connection closed")
+
+    async def fake_sleep(value):
+        delays.append(value)
+
+    monkeypatch.setattr("game_downloader.download.manager.asyncio.sleep", fake_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(DownloadError, match="download was interrupted"):
+            await DownloadManager(
+                client=client,
+                resolve_hosts=False,
+                max_attempts=3,
+            ).download(resolved(), tmp_path)
+
+    assert calls == 3
+    assert delays == [1, 2]
 
 
 @pytest.mark.asyncio

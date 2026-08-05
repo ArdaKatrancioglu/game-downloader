@@ -7,6 +7,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from game_downloader.error_diagnostics import log_exception
+
 _SECRET_HEADERS = {"authorization", "cookie", "proxy-authorization", "set-cookie"}
 _SECRET_QUERY_KEYS = {"access_token", "api_key", "apikey", "key", "t", "token", "v"}
 _USEFUL_RESPONSE_HEADERS = {
@@ -150,5 +152,10 @@ class HttpTrace:
             self.url,
             elapsed_ms,
             type(exc).__name__,
+            exc,
+        )
+        log_exception(
+            self.logger,
+            f"http-transport:{self.operation}",
             exc,
         )
