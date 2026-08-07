@@ -3,14 +3,13 @@ from __future__ import annotations
 import logging
 import re
 from time import monotonic
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
 from game_downloader.error_diagnostics import log_exception
+from game_downloader.security import redact_url
 
 _SECRET_HEADERS = {"authorization", "cookie", "proxy-authorization", "set-cookie"}
-_SECRET_QUERY_KEYS = {"access_token", "api_key", "apikey", "key", "t", "token", "v"}
 _USEFUL_RESPONSE_HEADERS = {
     "cf-ray",
     "content-length",
@@ -24,14 +23,7 @@ _USEFUL_RESPONSE_HEADERS = {
 
 
 def safe_url(value: str | httpx.URL) -> str:
-    parsed = urlsplit(str(value))
-    query = [
-        (key, "[REDACTED]" if key.lower() in _SECRET_QUERY_KEYS else item)
-        for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-    ]
-    return urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), "")
-    )
+    return redact_url(str(value))
 
 
 def safe_headers(

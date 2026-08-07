@@ -38,7 +38,11 @@ from game_downloader.models import (
     GameRelease,
 )
 from game_downloader.settings import AppSettings, SettingsRepository
-from game_downloader.storage.browser_direct import BrowserDirectDownloader, BrowserOptions
+from game_downloader.storage.browser_direct import (
+    BrowserDirectDownloader,
+    BrowserOptions,
+    RemoteExtractionResult,
+)
 from game_downloader.ui.download_dialog import DownloadDialog
 from game_downloader.ui.settings_dialog import SettingsDialog
 from game_downloader.ui.theme import load_theme
@@ -76,6 +80,9 @@ class MainWindow(QMainWindow):
         self.cancellation_pending = False
         self.download_destination = settings.default_download_folder.expanduser()
         self.download_auto_extract = settings.auto_extract_zip
+        self.download_on_demand_extract = (
+            settings.auto_extract_zip and settings.on_demand_zip_extraction
+        )
         self.shutdown_after_completion = False
         self.workers: set[CoroutineWorker | BrowserDirectWorker | ExtractionWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
@@ -400,7 +407,8 @@ class MainWindow(QMainWindow):
             if entry.source and entry.source.downloads
             else ""
         )
-        archive_available = not download_name or Path(download_name).suffix.lower() in {
+        download_suffix = Path(download_name).suffix.lower()
+        archive_available = not download_suffix or download_suffix in {
             ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2"
         }
         dialog = DownloadDialog(
@@ -419,6 +427,9 @@ class MainWindow(QMainWindow):
         choices = dialog.choices()
         self.download_destination = choices.destination
         self.download_auto_extract = choices.auto_extract
+        self.download_on_demand_extract = (
+            choices.auto_extract and self.settings.on_demand_zip_extraction
+        )
         self.shutdown_after_completion = choices.shutdown_after_completion
         self._set_browsing_enabled(False)
         self.search_button.setEnabled(False)
@@ -463,10 +474,20 @@ class MainWindow(QMainWindow):
         max_speed = None
         if self.limit_speed_checkbox.isChecked():
             max_speed = round(self.limit_speed_spin.value() * 1_000_000 / 8)
+        logger.info(
+            "ZIP transfer mode on_demand=%s auto_extract=%s",
+            self.download_on_demand_extract,
+            self.download_auto_extract,
+        )
         worker = BrowserDirectWorker(
             self._browser_downloader(max_bytes_per_second=max_speed),
             self.current_release.source,
             folder,
+            stream_extract_zip=self.download_on_demand_extract,
+            extraction_limits=ExtractionLimits(
+                max_total_size=self.settings.max_extracted_archive_size,
+                max_files=self.settings.max_extracted_file_count,
+            ),
         )
         self.active_download_worker = worker
         worker.notice.connect(self.status.setText)
@@ -474,8 +495,17 @@ class MainWindow(QMainWindow):
         worker.succeeded.connect(self._direct_download_finished)
         worker.cancelled.connect(self._download_cancelled)
         worker.failed.connect(self._download_failed)
-        phases = 3 if self.download_auto_extract else 1
-        self.part_progress_label.setText(f"Aşama 1/{phases} · İndirme hazırlanıyor…")
+        phases = (
+            1
+            if self.download_on_demand_extract
+            else (3 if self.download_auto_extract else 1)
+        )
+        action = (
+            "İndirme ve çıkarma hazırlanıyor…"
+            if self.download_on_demand_extract
+            else "İndirme hazırlanıyor…"
+        )
+        self.part_progress_label.setText(f"Aşama 1/{phases} · {action}")
         self.total_progress_label.setText("Toplam süreç: %0")
         self.part_eta_label.setText("Bu aşamanın kalan süresi: hesaplanıyor…")
         self.total_eta_label.setText("Toplam kalan süre: hesaplanıyor…")
@@ -504,13 +534,18 @@ class MainWindow(QMainWindow):
     def _direct_download_progress(self, value: object) -> None:
         self._enable_transfer_controls()
         progress = DownloadProgress.model_validate(value)
-        phases = 3 if self.download_auto_extract else 1
+        phases = (
+            1
+            if self.download_on_demand_extract
+            else (3 if self.download_auto_extract else 1)
+        )
         percent = "—" if progress.percent is None else f"%{progress.percent:.1f}"
         text = (
             f"{_format_bytes(progress.downloaded)} / {_format_bytes(progress.total)} "
             f"({percent})"
         )
-        self.part_progress_label.setText(f"Aşama 1/{phases} · İndirme: {text}")
+        action = "İndirme ve çıkarma" if self.download_on_demand_extract else "İndirme"
+        self.part_progress_label.setText(f"Aşama 1/{phases} · {action}: {text}")
         _set_progress_bar(self.part_progress, progress.percent)
         overall_percent = (
             None if progress.percent is None else progress.percent / phases
@@ -527,8 +562,32 @@ class MainWindow(QMainWindow):
         )
 
     def _direct_download_finished(self, value: object) -> None:
+        if isinstance(value, RemoteExtractionResult):
+            self._remote_extraction_finished(value)
+            return
         path = Path(value)
         self._download_finished([path])
+
+    def _remote_extraction_finished(self, result: RemoteExtractionResult) -> None:
+        self.downloaded_path = None
+        self.downloaded_paths = []
+        self.extracted_path = result.destination
+        self.size_label.setText(_format_total_gb(result.total_size))
+        self.part_progress.setRange(0, 100)
+        self.part_progress.setValue(100)
+        self.total_progress.setRange(0, 100)
+        self.total_progress.setValue(100)
+        self.part_progress_label.setText("Aşama 1/1 · İndirme sırasında çıkarma tamamlandı")
+        self.total_progress_label.setText("Toplam süreç: %100")
+        self.transfer_label.setText("Hız: —")
+        self.part_eta_label.setText("Bu aşamanın kalan süresi: 0 sn")
+        self.total_eta_label.setText("Toplam kalan süre: 0 sn")
+        self.status.setText(
+            f"Arşiv indirilirken açıldı: {result.file_count} dosya"
+        )
+        self._finish_download_controls()
+        self.open_folder_button.setEnabled(True)
+        self._perform_completion_action()
 
     def _download_finished(self, value: object) -> None:
         self.downloaded_paths = [Path(path) for path in value]

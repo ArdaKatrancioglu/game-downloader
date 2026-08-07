@@ -29,6 +29,14 @@ def test_auto_extract_zip_setting_round_trips(tmp_path):
     assert repository.load().auto_extract_zip is True
 
 
+def test_on_demand_zip_extraction_setting_round_trips(tmp_path):
+    path = tmp_path / "settings.json"
+    repository = SettingsRepository(path)
+    repository.save(AppSettings(on_demand_zip_extraction=False))
+
+    assert repository.load().on_demand_zip_extraction is False
+
+
 def test_download_attempt_count_round_trips(tmp_path):
     path = tmp_path / "settings.json"
     repository = SettingsRepository(path)

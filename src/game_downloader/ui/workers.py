@@ -12,7 +12,12 @@ from game_downloader.archive.extractor import ArchiveExtractor
 from game_downloader.download.manager import DownloadCancelled, DownloadManager
 from game_downloader.download.progress import ProgressTracker
 from game_downloader.error_diagnostics import log_exception
-from game_downloader.models import BrowserDirectSource, DownloadProgress, ResolvedDownload
+from game_downloader.models import (
+    BrowserDirectSource,
+    DownloadProgress,
+    ExtractionLimits,
+    ResolvedDownload,
+)
 from game_downloader.storage.browser_direct import BrowserDirectDownloader
 
 logger = logging.getLogger(__name__)
@@ -172,21 +177,31 @@ class BrowserDirectWorker(QThread):
         downloader: BrowserDirectDownloader,
         source: BrowserDirectSource,
         destination: Path,
+        *,
+        stream_extract_zip: bool = False,
+        extraction_limits: ExtractionLimits | None = None,
     ) -> None:
         super().__init__()
         self.downloader = downloader
         self.source = source
         self.destination = destination
+        self.stream_extract_zip = stream_extract_zip
+        self.extraction_limits = extraction_limits
         self.loop: asyncio.AbstractEventLoop | None = None
-        self.task: asyncio.Task[Path] | None = None
+        self.task: asyncio.Task[object] | None = None
 
     def run(self) -> None:
-        async def execute() -> Path:
+        async def execute() -> object:
             self.loop = asyncio.get_running_loop()
+            options: dict[str, object] = {}
+            if self.stream_extract_zip:
+                options["stream_extract_zip"] = True
+                options["extraction_limits"] = self.extraction_limits
             self.task = asyncio.create_task(
                 self.downloader.download(
                     self.source, self.destination,
                     progress=self.progress.emit, notice=self.notice.emit,
+                    **options,
                 )
             )
             return await self.task
@@ -206,14 +221,17 @@ class BrowserDirectWorker(QThread):
             self.loop = None
 
     def pause_download(self) -> None:
+        self.downloader.pause_range()
         if self.loop:
             self.loop.call_soon_threadsafe(self.downloader.pause)
 
     def resume_download(self) -> None:
+        self.downloader.resume_range()
         if self.loop:
             self.loop.call_soon_threadsafe(self.downloader.resume)
 
     def cancel_download(self) -> None:
+        self.downloader.cancel_range()
         if self.loop:
             def cancel_now() -> None:
                 self.downloader.cancel()
@@ -223,6 +241,7 @@ class BrowserDirectWorker(QThread):
             self.loop.call_soon_threadsafe(cancel_now)
 
     def set_speed_limit(self, max_bytes_per_second: int | None) -> None:
+        self.downloader.set_range_speed_limit(max_bytes_per_second)
         if self.loop:
             self.loop.call_soon_threadsafe(
                 lambda: self.downloader.set_speed_limit(max_bytes_per_second)

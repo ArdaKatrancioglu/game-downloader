@@ -143,7 +143,7 @@ class DownloadDialog(QDialog):
         panel_layout.addWidget(options_title)
         options_layout = QVBoxLayout()
         options_layout.setSpacing(12)
-        self.auto_extract = QCheckBox("İndirme tamamlandığında arşivi çıkar")
+        self.auto_extract = QCheckBox("ZIP arşivini otomatik çıkar")
         self.auto_extract.setChecked(auto_extract and archive_available)
         self.auto_extract.setVisible(archive_available)
         self.auto_extract.toggled.connect(self._update_space)

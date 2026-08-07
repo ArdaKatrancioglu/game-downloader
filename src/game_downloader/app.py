@@ -32,6 +32,10 @@ def _configure_logging(level: str, log_folder: Path) -> None:
     root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
+    # httpx logs the complete request URL at INFO, including temporary query tokens.
+    # Application-level HTTP diagnostics already record redacted request details.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger(__name__).info(
         "Application logging started level=%s log_file=%s",
         level.upper(),

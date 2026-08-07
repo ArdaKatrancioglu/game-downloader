@@ -70,10 +70,14 @@ sistem Downloads klasörü seçilir. Aynı değerler sırasıyla
 `GAME_DOWNLOADER_BROWSER_TIMEOUT_SECONDS` ve
 `GAME_DOWNLOADER_DEFAULT_DOWNLOAD_FOLDER` ortam değişkenleriyle de verilebilir.
 
-**Ayarlar** içindeki “İndirme tamamlanınca ZIP dosyasını otomatik çıkar” seçeneği
-aktifse tamamlanan `.zip` arşivi aynı içerik klasöründe güvenli biçimde çıkarılır.
-Çıkarma başarıyla tamamlanınca kaynak arşiv silinir; çıkarma başarısız olursa
-arşiv korunur.
+**Ayarlar** içindeki “On-demand: HTTP Range ile ZIP'i indirirken çıkar” seçeneği
+aktifse uygulama ZIP dizinini uzaktan okur ve üyeleri gereken bloklar geldikçe
+hedef klasöre çıkarır. Range aktarımı 8 MiB bloklar kullanır ve mevcut blok
+çıkarılırken sıradaki bloğu arka planda önceden getirir. Tam ZIP bu yolda diske
+yazılmaz. Seçenek kapalıysa ZIP tek
+sıralı bağlantıyla indirilir ve otomatik çıkarma açıksa indirme tamamlandıktan
+sonra çıkarılır. Sunucu Range isteklerini desteklemiyorsa da bu sıralı akışa
+otomatik dönülür. RAR, 7z ve TAR arşivleri normal indirme yolunu kullanır.
 
 Bir arama sonucu seçilip **İndir** düğmesine basıldığında tarayıcı aynı işlem
 içinde modalı açar, ilk görünür Download kaydını seçer ve indirmeyi başlatır.

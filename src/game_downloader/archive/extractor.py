@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,17 @@ from game_downloader.models import ExtractionLimits, ExtractionResult
 
 logger = logging.getLogger(__name__)
 ExtractionProgressCallback = Callable[[int, int], None]
+
+_ZIP_COMPRESSION_NAMES = {
+    0: "stored",
+    8: "deflate",
+    9: "deflate64",
+    12: "bzip2",
+    14: "lzma",
+    20: "zstandard-legacy",
+    93: "zstandard",
+    98: "ppmd",
+}
 
 
 class ArchiveError(RuntimeError):
@@ -188,6 +200,83 @@ class ArchiveExtractor:
             total_size=total_size,
         )
 
+    def extract_zip_stream(
+        self,
+        archive: object,
+        destination: Path,
+        *,
+        archive_size: int,
+        progress: ExtractionProgressCallback | None = None,
+    ) -> ExtractionResult:
+        """Safely extract a seekable remote ZIP without materializing the ZIP on disk."""
+        if destination.exists():
+            raise ArchiveError("The extraction destination already exists.")
+        with zipfile.ZipFile(archive) as source:
+            infos = source.infolist()
+            methods = Counter(info.compress_type for info in infos if not info.is_dir())
+            method_summary = _zip_compression_summary(methods)
+            logger.info(
+                "Remote ZIP compression methods methods=%s files=%d",
+                method_summary,
+                sum(methods.values()),
+            )
+            supported = {
+                zipfile.ZIP_STORED,
+                zipfile.ZIP_DEFLATED,
+                zipfile.ZIP_BZIP2,
+                zipfile.ZIP_LZMA,
+            }
+            if zstandard := getattr(zipfile, "ZIP_ZSTANDARD", None):
+                supported.add(zstandard)
+            unsupported = {
+                method: count
+                for method, count in methods.items()
+                if method not in supported
+            }
+            if unsupported:
+                unsupported_summary = _zip_compression_summary(unsupported)
+                logger.warning(
+                    "Remote ZIP compression unsupported methods=%s",
+                    unsupported_summary,
+                )
+                raise NotImplementedError(
+                    f"Unsupported ZIP compression methods: {unsupported_summary}"
+                )
+            members = [
+                ArchiveMember(
+                    name=info.filename,
+                    size=info.file_size,
+                    compressed_size=info.compress_size,
+                    is_directory=info.is_dir(),
+                )
+                for info in infos
+            ]
+            if any(_zip_is_link(info) for info in infos):
+                raise ArchiveError("The archive contains a symbolic link.")
+            self._validate_members(members, archive_size)
+            total_size = sum(item.size for item in members if not item.is_directory)
+            if progress:
+                progress(0, total_size)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{destination.name}.extracting-", dir=destination.parent
+                )
+            )
+            try:
+                self._extract_zip_source(source, temporary, progress, total_size)
+                if progress:
+                    progress(total_size, total_size)
+                os.replace(temporary, destination)
+            except Exception:
+                shutil.rmtree(temporary, ignore_errors=True)
+                raise
+        return ExtractionResult(
+            destination=destination,
+            file_count=sum(not item.is_directory for item in members),
+            total_size=total_size,
+        )
+
     def _validate_members(self, members: list[ArchiveMember], archive_size: int) -> None:
         files = [member for member in members if not member.is_directory]
         if len(files) > self.limits.max_files:
@@ -218,20 +307,29 @@ class ArchiveExtractor:
         progress: ExtractionProgressCallback | None = None,
         total_size: int = 0,
     ) -> None:
-        extracted = 0
         with zipfile.ZipFile(archive) as source:
-            for info in source.infolist():
-                output = target / _safe_member_path(info.filename)
-                if info.is_dir():
-                    output.mkdir(parents=True, exist_ok=True)
-                    continue
-                output.parent.mkdir(parents=True, exist_ok=True)
-                with source.open(info) as input_file, output.open("xb") as output_file:
-                    while chunk := input_file.read(1024 * 1024):
-                        output_file.write(chunk)
-                        extracted += len(chunk)
-                        if progress:
-                            progress(extracted, total_size)
+            ArchiveExtractor._extract_zip_source(source, target, progress, total_size)
+
+    @staticmethod
+    def _extract_zip_source(
+        source: zipfile.ZipFile,
+        target: Path,
+        progress: ExtractionProgressCallback | None = None,
+        total_size: int = 0,
+    ) -> None:
+        extracted = 0
+        for info in source.infolist():
+            output = target / _safe_member_path(info.filename)
+            if info.is_dir():
+                output.mkdir(parents=True, exist_ok=True)
+                continue
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with source.open(info) as input_file, output.open("xb") as output_file:
+                while chunk := input_file.read(1024 * 1024):
+                    output_file.write(chunk)
+                    extracted += len(chunk)
+                    if progress:
+                        progress(extracted, total_size)
 
     @staticmethod
     def _extract_tar(
@@ -446,6 +544,13 @@ def _safe_member_path(name: str) -> Path:
     if not parts:
         return Path(".")
     return Path(*parts)
+
+
+def _zip_compression_summary(methods: dict[int, int] | Counter[int]) -> str:
+    return ",".join(
+        f"{method}:{_ZIP_COMPRESSION_NAMES.get(method, 'unknown')}={count}"
+        for method, count in sorted(methods.items())
+    )
 
 
 def _zip_is_link(info: zipfile.ZipInfo) -> bool:

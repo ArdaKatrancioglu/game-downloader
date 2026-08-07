@@ -7,7 +7,7 @@ name = "authorized-game-downloader"
 version = "0.1.0"
 description = "Web search and sequential multipart downloader for authorized game archives"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 dependencies = [
   "beautifulsoup4>=4.12",
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-packaging = ["pyinstaller>=6.10"]
+packaging = ["pyinstaller>=6.15"]
 dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.24",

@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import traceback
 
+from game_downloader.security import redact_diagnostic
+
 
 def log_exception(
     logger: logging.Logger,
@@ -10,13 +12,15 @@ def log_exception(
     exc: BaseException,
 ) -> None:
     """Log an exception with its complete cause/context chain."""
-    chain = _exception_chain(exc)
-    formatted = "".join(traceback.format_exception(exc, chain=True)).rstrip()
+    chain = [redact_diagnostic(item) for item in _exception_chain(exc)]
+    formatted = redact_diagnostic(
+        "".join(traceback.format_exception(exc, chain=True)).rstrip()
+    )
     logger.error(
         "Exception diagnostic operation=%s error_type=%s error=%s exception_chain=%s\n%s",
         operation,
         type(exc).__name__,
-        exc,
+        redact_diagnostic(str(exc)),
         " -> ".join(chain),
         formatted,
     )

@@ -425,3 +425,28 @@ def test_browser_worker_transfers_progress_signal(tmp_path):
     worker.progress.connect(received.append)
     worker.run()
     assert received[0].downloaded == 5
+
+
+def test_browser_worker_passes_on_demand_mode_only_when_enabled(tmp_path):
+    from game_downloader.ui.workers import BrowserDirectWorker
+
+    received_options = []
+
+    class Downloader:
+        async def download(self, source, destination, *, progress, notice, **options):
+            received_options.append(options)
+            return destination / "demo.zip"
+
+    source = BrowserDirectSource(
+        page_url="https://catalog.example/game",
+        downloads=[BrowserDownloadRecord(id="7", name="demo.zip")],
+    )
+    BrowserDirectWorker(Downloader(), source, tmp_path).run()
+    BrowserDirectWorker(
+        Downloader(), source, tmp_path, stream_extract_zip=True
+    ).run()
+
+    assert received_options == [
+        {},
+        {"stream_extract_zip": True, "extraction_limits": None},
+    ]

@@ -41,6 +41,7 @@ class AppSettings(BaseSettings):
     browser_headless: bool = True
     browser_timeout_seconds: float = Field(default=30.0, ge=1, le=300)
     auto_extract_zip: bool = True
+    on_demand_zip_extraction: bool = True
     download_max_attempts: int = Field(default=3, ge=1, le=10)
     max_extracted_archive_size: int = 200 * 1024**3
     max_extracted_file_count: int = 100_000

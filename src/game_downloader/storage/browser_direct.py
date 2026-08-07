@@ -11,13 +11,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from game_downloader.download.manager import DownloadManager, NoticeCallback, ProgressCallback
+from game_downloader.archive.extractor import ArchiveExtractor
+from game_downloader.archive.http_range import (
+    HttpRangeFile,
+    RangeDownloadCancelled,
+    RangeDownloadError,
+    RangeNotSupported,
+    RangeTransferControl,
+)
+from game_downloader.download.manager import (
+    DownloadCancelled,
+    DownloadManager,
+    NoticeCallback,
+    ProgressCallback,
+)
+from game_downloader.download.progress import ProgressTracker
 from game_downloader.models import (
     BrowserDirectSource,
     BrowserDownloadRecord,
+    ExtractionLimits,
     ResolvedDownload,
 )
-from game_downloader.security import safe_filename
+from game_downloader.security import ensure_public_host, safe_filename
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +61,15 @@ class BrowserOptions:
     executable_path: Path | None = None
     headless: bool = False
     timeout_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
+class RemoteExtractionResult:
+    destination: Path
+    file_count: int
+    total_size: int
+    archive_size: int
+    downloaded_size: int
 
 
 def download_id_from_click(value: str | None) -> str | None:
@@ -79,6 +103,16 @@ def resolved_from_response(
     raise BrowserDirectError(str(message or "Sunucu geçici indirme adresi döndürmedi."))
 
 
+def _available_destination(folder: Path, filename: str) -> Path:
+    name = Path(filename).stem or "archive"
+    candidate = folder / name
+    index = 2
+    while candidate.exists():
+        candidate = folder / f"{name} ({index})"
+        index += 1
+    return candidate
+
+
 class BrowserDirectDownloader:
     """Use Chrome to resolve a download URL, then stream it without Chrome."""
 
@@ -93,15 +127,21 @@ class BrowserDirectDownloader:
         self.manager = manager or DownloadManager()
         self._playwright_factory = playwright_factory
         self._active_browser_download: object | None = None
+        self._range_control = RangeTransferControl(
+            getattr(self.manager, "max_bytes_per_second", None)
+        )
 
     def pause(self) -> None:
         self.manager.pause()
+        self._range_control.pause()
 
     def resume(self) -> None:
         self.manager.resume()
+        self._range_control.resume()
 
     def cancel(self) -> None:
         self.manager.cancel()
+        self._range_control.cancel()
         active = self._active_browser_download
         if active is not None:
             with suppress(Exception):
@@ -109,6 +149,19 @@ class BrowserDirectDownloader:
 
     def set_speed_limit(self, value: int | None) -> None:
         self.manager.set_speed_limit(value)
+        self._range_control.set_speed_limit(value)
+
+    def pause_range(self) -> None:
+        self._range_control.pause()
+
+    def resume_range(self) -> None:
+        self._range_control.resume()
+
+    def cancel_range(self) -> None:
+        self._range_control.cancel()
+
+    def set_range_speed_limit(self, value: int | None) -> None:
+        self._range_control.set_speed_limit(value)
 
     async def download(
         self,
@@ -117,7 +170,10 @@ class BrowserDirectDownloader:
         *,
         progress: ProgressCallback | None = None,
         notice: NoticeCallback | None = None,
-    ) -> Path:
+        stream_extract_zip: bool = False,
+        extraction_limits: ExtractionLimits | None = None,
+    ) -> Path | RemoteExtractionResult:
+        self._range_control.reset()
         await _notice(notice, "Tarayıcı başlatılıyor…")
         factory = self._playwright_factory
         if factory is None:
@@ -177,6 +233,31 @@ class BrowserDirectDownloader:
             context = None
             browser = None
             playwright = None
+            if stream_extract_zip and resolved.filename.casefold().endswith(".zip"):
+                await _notice(notice, "ZIP Range desteği denetleniyor…")
+                try:
+                    result = await self._extract_remote_zip(
+                        resolved,
+                        destination,
+                        progress=progress,
+                        notice=notice,
+                        limits=extraction_limits,
+                    )
+                except RangeDownloadCancelled as exc:
+                    raise DownloadCancelled(str(exc)) from exc
+                except (RangeNotSupported, RangeDownloadError, NotImplementedError) as exc:
+                    logger.warning(
+                        "Remote ZIP extraction completed result=fallback error_type=%s detail=%s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    await _notice(
+                        notice,
+                        "Sunucu doğrudan ZIP açmayı desteklemiyor; normal indirmeye geçiliyor…",
+                    )
+                else:
+                    await _notice(notice, f"İndirme sırasında arşiv açıldı: {result.destination}")
+                    return result
             await _notice(notice, f"İndirme başladı: {resolved.filename}")
             result = await self.manager.download(
                 resolved,
@@ -191,6 +272,63 @@ class BrowserDirectDownloader:
         finally:
             self._active_browser_download = None
             await _close_browser_resources(context, browser, playwright)
+
+    async def _extract_remote_zip(
+        self,
+        resolved: ResolvedDownload,
+        destination_folder: Path,
+        *,
+        progress: ProgressCallback | None,
+        notice: NoticeCallback | None,
+        limits: ExtractionLimits | None,
+    ) -> RemoteExtractionResult:
+        host = self.manager._validate_download_url(str(resolved.url))
+        if getattr(self.manager, "resolve_hosts", True):
+            await ensure_public_host(host)
+        destination = _available_destination(destination_folder, resolved.filename)
+        tracker = ProgressTracker()
+
+        def report_download(downloaded: int, total: int) -> None:
+            if progress:
+                progress(tracker.update(downloaded, total))
+
+        await _notice(notice, "ZIP dizini uzaktan okunuyor…")
+        with HttpRangeFile(
+            str(resolved.url),
+            referer=str(resolved.referer) if resolved.referer else None,
+            require_attachment=resolved.require_attachment,
+            control=self._range_control,
+            progress=report_download,
+        ) as remote:
+            logger.info(
+                "Remote ZIP extraction started archive_size=%d block_size=%d prefetch=%s",
+                remote.size,
+                remote.block_size,
+                remote.prefetch,
+            )
+            await _notice(notice, "ZIP inerken hedef klasöre açılıyor…")
+            extraction = ArchiveExtractor(limits).extract_zip_stream(
+                remote,
+                destination,
+                archive_size=remote.size,
+            )
+            if progress:
+                progress(tracker.update(remote.size, remote.size))
+            logger.info(
+                "Remote ZIP extraction completed result=success archive_size=%d "
+                "downloaded_size=%d extracted_size=%d file_count=%d",
+                remote.size,
+                remote.downloaded,
+                extraction.total_size,
+                extraction.file_count,
+            )
+            return RemoteExtractionResult(
+                destination=extraction.destination,
+                file_count=extraction.file_count,
+                total_size=extraction.total_size,
+                archive_size=remote.size,
+                downloaded_size=remote.downloaded,
+            )
 
     async def _request_download_url(
         self,

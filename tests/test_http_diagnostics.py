@@ -80,3 +80,17 @@ def test_tls_transport_failure_logs_full_traceback_and_cause_chain(caplog):
     assert "cause:SSLCertVerificationError" in output
     assert "certificate verify failed" in output
     assert "The above exception was the direct cause" in output
+
+
+def test_download_trace_redacts_signature_and_long_path_token(caplog):
+    path_token = "A" * 100
+    signature = "SIGNATURE_SECRET"
+    url = f"https://download.example/download/{path_token}?sig={signature}&safe=yes"
+
+    with caplog.at_level(logging.INFO):
+        HttpTrace(logging.getLogger("test.http"), "download", "GET", url)
+
+    output = caplog.text
+    assert path_token not in output
+    assert signature not in output
+    assert "safe=yes" in output

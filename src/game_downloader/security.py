@@ -21,7 +21,11 @@ _SENSITIVE_QUERY = {
     "key",
     "apikey",
     "api_key",
+    "signature",
+    "sig",
 }
+_LONG_SECRET_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._~-]{64,}$")
+_URL_PATTERN = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
 
 
 def normalized_host(host: str | None) -> str:
@@ -81,13 +85,21 @@ def safe_filename(name: str) -> str:
     return candidate
 
 
+def redact_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return value
+    path = "/".join(
+        "<redacted>" if _LONG_SECRET_PATH_SEGMENT.fullmatch(part) else part
+        for part in parsed.path.split("/")
+    )
+    query = [
+        (key, "<redacted>" if key.lower() in _SENSITIVE_QUERY else item)
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+    ]
+    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), ""))
+
+
 def redact_diagnostic(value: str) -> str:
     redacted = _TOKEN_PATTERN.sub(r"\1<redacted>", value)
-    parsed = urlsplit(redacted)
-    if parsed.scheme and parsed.netloc and parsed.query:
-        query = [
-            (key, "<redacted>" if key.lower() in _SENSITIVE_QUERY else item)
-            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-        ]
-        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
-    return redacted
+    return _URL_PATTERN.sub(lambda match: redact_url(match.group(0)), redacted)

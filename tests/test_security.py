@@ -3,6 +3,7 @@ import pytest
 from game_downloader.security import (
     SecurityError,
     redact_diagnostic,
+    redact_url,
     validate_https_url,
 )
 
@@ -30,3 +31,13 @@ def test_redaction_removes_temporary_download_token():
     )
     assert "temporary-secret" not in url
     assert "token=%3Credacted%3E" in url
+
+
+def test_redaction_removes_signed_download_path_and_query():
+    path_token = "aB_9-" * 20
+    redacted = redact_url(
+        f"https://download.example/download/{path_token}?sig=secret&safe=yes"
+    )
+    assert path_token not in redacted
+    assert "secret" not in redacted
+    assert "safe=yes" in redacted

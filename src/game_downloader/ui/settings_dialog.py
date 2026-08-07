@@ -47,8 +47,17 @@ class SettingsDialog(QDialog):
         self.browser_timeout.setRange(1, 300)
         self.browser_timeout.setSuffix(" sn")
         self.browser_timeout.setValue(round(settings.browser_timeout_seconds))
-        self.auto_extract_zip = QCheckBox("İndirme tamamlanınca ZIP dosyasını otomatik çıkar")
+        self.auto_extract_zip = QCheckBox("ZIP arşivini otomatik çıkar")
         self.auto_extract_zip.setChecked(settings.auto_extract_zip)
+        self.on_demand_zip_extraction = QCheckBox(
+            "On-demand: HTTP Range ile ZIP'i indirirken çıkar"
+        )
+        self.on_demand_zip_extraction.setChecked(settings.on_demand_zip_extraction)
+        self.on_demand_zip_extraction.setEnabled(settings.auto_extract_zip)
+        self.on_demand_zip_extraction.setToolTip(
+            "Kapalıysa ZIP tek sıralı bağlantıyla indirilir ve tamamlandıktan sonra çıkarılır."
+        )
+        self.auto_extract_zip.toggled.connect(self.on_demand_zip_extraction.setEnabled)
         self.download_attempts = QSpinBox()
         self.download_attempts.setRange(1, 10)
         self.download_attempts.setValue(settings.download_max_attempts)
@@ -64,7 +73,8 @@ class SettingsDialog(QDialog):
         form.addRow("Chrome çalıştırılabilir dosyası", chrome_row)
         form.addRow("Tarayıcı modu", self.browser_headless)
         form.addRow("Tarayıcı zaman aşımı", self.browser_timeout)
-        form.addRow("Arşiv işlemi", self.auto_extract_zip)
+        form.addRow("Otomatik çıkarma", self.auto_extract_zip)
+        form.addRow("Çıkarma modu", self.on_demand_zip_extraction)
         form.addRow("Toplam indirme denemesi", self.download_attempts)
         form.addRow("Maksimum çıkarma (GiB)", self.max_size)
 
@@ -108,6 +118,7 @@ class SettingsDialog(QDialog):
                 "browser_headless": self.browser_headless.isChecked(),
                 "browser_timeout_seconds": float(self.browser_timeout.value()),
                 "auto_extract_zip": self.auto_extract_zip.isChecked(),
+                "on_demand_zip_extraction": self.on_demand_zip_extraction.isChecked(),
                 "download_max_attempts": self.download_attempts.value(),
                 "max_extracted_archive_size": self.max_size.value() * 1024**3,
             }
