@@ -178,16 +178,22 @@ class BrowserDirectWorker(QThread):
         self.source = source
         self.destination = destination
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.task: asyncio.Task[Path] | None = None
 
     def run(self) -> None:
         async def execute() -> Path:
             self.loop = asyncio.get_running_loop()
-            return await self.downloader.download(
-                self.source, self.destination,
-                progress=self.progress.emit, notice=self.notice.emit,
+            self.task = asyncio.create_task(
+                self.downloader.download(
+                    self.source, self.destination,
+                    progress=self.progress.emit, notice=self.notice.emit,
+                )
             )
+            return await self.task
         try:
             result = asyncio.run(execute())
+        except asyncio.CancelledError:
+            self.cancelled.emit("İndirme hemen iptal edildi; yarım dosya korundu.")
         except DownloadCancelled as exc:
             self.cancelled.emit(str(exc))
         except Exception as exc:
@@ -196,6 +202,7 @@ class BrowserDirectWorker(QThread):
         else:
             self.succeeded.emit(result)
         finally:
+            self.task = None
             self.loop = None
 
     def pause_download(self) -> None:
@@ -208,7 +215,12 @@ class BrowserDirectWorker(QThread):
 
     def cancel_download(self) -> None:
         if self.loop:
-            self.loop.call_soon_threadsafe(self.downloader.cancel)
+            def cancel_now() -> None:
+                self.downloader.cancel()
+                if self.task is not None and not self.task.done():
+                    self.task.cancel()
+
+            self.loop.call_soon_threadsafe(cancel_now)
 
     def set_speed_limit(self, max_bytes_per_second: int | None) -> None:
         if self.loop:

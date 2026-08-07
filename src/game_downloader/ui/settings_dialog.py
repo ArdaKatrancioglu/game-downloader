@@ -49,6 +49,10 @@ class SettingsDialog(QDialog):
         self.browser_timeout.setValue(round(settings.browser_timeout_seconds))
         self.auto_extract_zip = QCheckBox("İndirme tamamlanınca ZIP dosyasını otomatik çıkar")
         self.auto_extract_zip.setChecked(settings.auto_extract_zip)
+        self.download_attempts = QSpinBox()
+        self.download_attempts.setRange(1, 10)
+        self.download_attempts.setValue(settings.download_max_attempts)
+        self.download_attempts.setSuffix(" deneme")
 
         self.max_size = QSpinBox()
         self.max_size.setRange(1, 10_000)
@@ -61,6 +65,7 @@ class SettingsDialog(QDialog):
         form.addRow("Tarayıcı modu", self.browser_headless)
         form.addRow("Tarayıcı zaman aşımı", self.browser_timeout)
         form.addRow("Arşiv işlemi", self.auto_extract_zip)
+        form.addRow("Toplam indirme denemesi", self.download_attempts)
         form.addRow("Maksimum çıkarma (GiB)", self.max_size)
 
         buttons = QDialogButtonBox(
@@ -103,6 +108,7 @@ class SettingsDialog(QDialog):
                 "browser_headless": self.browser_headless.isChecked(),
                 "browser_timeout_seconds": float(self.browser_timeout.value()),
                 "auto_extract_zip": self.auto_extract_zip.isChecked(),
+                "download_max_attempts": self.download_attempts.value(),
                 "max_extracted_archive_size": self.max_size.value() * 1024**3,
             }
         )

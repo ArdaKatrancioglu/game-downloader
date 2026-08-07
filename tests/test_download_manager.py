@@ -1,5 +1,7 @@
+import errno
 import gzip
 import hashlib
+import socket
 import ssl
 
 import httpx
@@ -197,7 +199,7 @@ async def test_interrupted_stream_retries_with_range(tmp_path, monkeypatch):
             chunk_size=1,
         ).download(resolved(), tmp_path)
     assert result.read_bytes() == b"abcdef"
-    assert delays == [1]
+    assert delays == [3]
 
 
 @pytest.mark.asyncio
@@ -229,7 +231,7 @@ async def test_tls_failure_retries_three_times_then_succeeds(tmp_path, monkeypat
 
     assert result.read_bytes() == b"abcdef"
     assert calls == 3
-    assert delays == [1, 2]
+    assert delays == [3, 5]
     assert any("(2/3)" in notice for notice in notices)
     assert any("(3/3)" in notice for notice in notices)
 
@@ -257,7 +259,175 @@ async def test_tls_failure_is_shown_after_retry_threshold(tmp_path, monkeypatch)
             ).download(resolved(), tmp_path)
 
     assert calls == 3
-    assert delays == [1, 2]
+    assert delays == [3, 5]
+
+
+@pytest.mark.asyncio
+async def test_untyped_connection_closed_by_peer_retries(tmp_path, monkeypatch):
+    calls = 0
+    delays = []
+
+    class UnstableStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            raise RuntimeError("connection closed by peer")
+            yield b""  # pragma: no cover
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(200, stream=UnstableStream(), request=request)
+        return httpx.Response(200, content=b"abcdef", request=request)
+
+    async def fake_sleep(value):
+        delays.append(value)
+
+    monkeypatch.setattr("game_downloader.download.manager.asyncio.sleep", fake_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await DownloadManager(
+            client=client,
+            resolve_hosts=False,
+            max_attempts=3,
+        ).download(resolved(), tmp_path)
+
+    assert result.read_bytes() == b"abcdef"
+    assert calls == 3
+    assert delays == [3, 5]
+
+
+@pytest.mark.asyncio
+async def test_clean_early_eof_retries_from_partial_file(tmp_path, monkeypatch):
+    calls = 0
+    delays = []
+
+    class ShortStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"abc"
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(200, stream=ShortStream(), request=request)
+        assert request.headers["range"] == "bytes=3-"
+        return httpx.Response(
+            206,
+            content=b"def",
+            headers={"Content-Range": "bytes 3-5/6"},
+            request=request,
+        )
+
+    async def fake_sleep(value):
+        delays.append(value)
+
+    monkeypatch.setattr("game_downloader.download.manager.asyncio.sleep", fake_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await DownloadManager(
+            client=client,
+            resolve_hosts=False,
+            max_attempts=3,
+        ).download(resolved(), tmp_path)
+
+    assert result.read_bytes() == b"abcdef"
+    assert calls == 2
+    assert delays == [3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [403, 500, 502, 503])
+async def test_http_error_responses_are_not_retried(tmp_path, status_code):
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status_code, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(DownloadError, match=f"HTTP {status_code}"):
+            await DownloadManager(
+                client=client,
+                resolve_hosts=False,
+                max_attempts=3,
+            ).download(resolved(), tmp_path)
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_temporary_dns_failure_retries(tmp_path, monkeypatch):
+    dns_calls = 0
+    delays = []
+
+    async def flaky_dns(_host):
+        nonlocal dns_calls
+        dns_calls += 1
+        if dns_calls < 3:
+            try:
+                raise socket.gaierror("temporary DNS failure")
+            except socket.gaierror as cause:
+                raise SecurityError("host could not be resolved") from cause
+
+    async def fake_sleep(value):
+        delays.append(value)
+
+    monkeypatch.setattr("game_downloader.download.manager.ensure_public_host", flaky_dns)
+    monkeypatch.setattr("game_downloader.download.manager.asyncio.sleep", fake_sleep)
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, content=b"abcdef", request=request)
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await DownloadManager(client=client, max_attempts=3).download(
+            resolved(), tmp_path
+        )
+
+    assert result.read_bytes() == b"abcdef"
+    assert dns_calls == 3
+    assert delays == [3, 5]
+
+
+@pytest.mark.asyncio
+async def test_local_disk_error_is_not_retried(tmp_path, monkeypatch):
+    calls = 0
+    manager = DownloadManager(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: None)),
+        resolve_hosts=False,
+        max_attempts=3,
+    )
+
+    async def disk_failure(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(manager, "_single_attempt", disk_failure)
+    try:
+        with pytest.raises(OSError, match="disk full"):
+            await manager.download(resolved(), tmp_path)
+    finally:
+        await manager._client.aclose()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_programming_error_at_request_boundary_is_not_retried(tmp_path):
+    calls = 0
+
+    def handler(_request):
+        nonlocal calls
+        calls += 1
+        raise TypeError("bad request integration")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(TypeError, match="bad request integration"):
+            await DownloadManager(
+                client=client,
+                resolve_hosts=False,
+                max_attempts=3,
+            ).download(resolved(), tmp_path)
+
+    assert calls == 1
 
 
 @pytest.mark.asyncio

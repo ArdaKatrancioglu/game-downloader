@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import shutil
+import socket
 import ssl
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -38,6 +39,10 @@ class DownloadError(RuntimeError):
 
 
 class DownloadCancelled(DownloadError):
+    pass
+
+
+class _RetryableNetworkError(RuntimeError):
     pass
 
 
@@ -139,8 +144,6 @@ class DownloadManager:
         part = destination.with_name(destination.name + ".part")
         url = str(resolved.url)
         initial_host = self._validate_download_url(url)
-        if self.resolve_hosts:
-            await ensure_public_host(initial_host)
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(
             follow_redirects=False,
@@ -149,6 +152,8 @@ class DownloadManager:
         try:
             for attempt in range(self.max_attempts):
                 try:
+                    if self.resolve_hosts:
+                        await ensure_public_host(initial_host)
                     await self._single_attempt(
                         client,
                         url,
@@ -177,7 +182,7 @@ class DownloadManager:
                             "The download was interrupted. The partial file was kept for resume."
                         ) from exc
                     next_attempt = attempt_number + 1
-                    delay = 2**attempt
+                    delay = _retry_delay(attempt_number)
                     logger.warning(
                         "Download connection retry scheduled failed_attempt=%d "
                         "next_attempt=%d max_attempts=%d delay_seconds=%d error_type=%s",
@@ -190,8 +195,9 @@ class DownloadManager:
                     if notice:
                         await _call(
                             notice,
-                            "SSL/TLS veya ağ bağlantısı kesildi. "
-                            f"Yeniden deneniyor ({next_attempt}/{self.max_attempts})…",
+                            "İndirme bağlantısı kesildi. "
+                            f"{delay} saniye sonra yeniden deneniyor "
+                            f"({next_attempt}/{self.max_attempts})…",
                         )
                     await asyncio.sleep(delay)
             self._validate_size(part, resolved.size)
@@ -239,10 +245,23 @@ class DownloadManager:
                     )
             mode = "ab" if existing and response.status_code == 206 else "wb"
             total = _response_total(response, existing, expected_size)
+            declared_transfer_size = _declared_transfer_size(response)
             tracker = ProgressTracker(existing)
             downloaded = existing
+            transfer_start = existing
             with part.open(mode) as output:
-                async for chunk in response.aiter_bytes(self.chunk_size):
+                chunks = response.aiter_bytes(self.chunk_size).__aiter__()
+                while True:
+                    try:
+                        chunk = await anext(chunks)
+                    except StopAsyncIteration:
+                        break
+                    except Exception as exc:
+                        if _is_definitely_non_retryable(exc):
+                            raise
+                        raise _RetryableNetworkError(
+                            "The network response stream was interrupted."
+                        ) from exc
                     if self._cancel.is_set():
                         raise DownloadCancelled(
                             "Download cancelled. The partial file was kept for resume."
@@ -265,9 +284,18 @@ class DownloadManager:
                 output.flush()
                 os.fsync(output.fileno())
             if total is not None and downloaded != total:
+                received_transfer_size = downloaded - transfer_start
+                response_ended_early = (
+                    declared_transfer_size is None
+                    or received_transfer_size < declared_transfer_size
+                )
+                if downloaded < total and response_ended_early:
+                    raise _RetryableNetworkError(
+                        "The network response ended before the expected number of bytes arrived: "
+                        f"expected {total}, received {downloaded}."
+                    )
                 raise DownloadError(
-                    f"Size validation failed: expected {total} bytes, "
-                    f"received {downloaded}."
+                    f"Size validation failed: expected {total} bytes, received {downloaded}."
                 )
         finally:
             await response.aclose()
@@ -291,9 +319,13 @@ class DownloadManager:
             )
             try:
                 response = await client.send(request, stream=True)
-            except (httpx.HTTPError, OSError) as exc:
+            except Exception as exc:
                 trace.exception(exc)
-                raise
+                if _is_definitely_non_retryable(exc):
+                    raise
+                raise _RetryableNetworkError(
+                    "The network request failed before a response was received."
+                ) from exc
             possible_cloudflare = (
                 response.status_code in {403, 503}
                 and (
@@ -392,6 +424,14 @@ def _response_total(
     return existing + int(content_length) if content_length and content_length.isdigit() else None
 
 
+def _declared_transfer_size(response: httpx.Response) -> int | None:
+    content_encoding = response.headers.get("content-encoding", "").casefold()
+    if content_encoding and content_encoding != "identity":
+        return None
+    content_length = response.headers.get("content-length")
+    return int(content_length) if content_length and content_length.isdigit() else None
+
+
 _RETRYABLE_CONNECTION_ERRNOS = {
     errno.ECONNABORTED,
     errno.ECONNREFUSED,
@@ -406,6 +446,21 @@ _RETRYABLE_CONNECTION_ERRNOS = {
 
 
 def _is_retryable_connection_error(exc: BaseException) -> bool:
+    # Hybrid-negative policy: failures that escape the request/response-stream
+    # boundary are retried unless they are known to be deterministic, local, or
+    # unsafe to repeat. Wrappers created at those boundaries remain explicit.
+    non_retryable = (
+        DownloadCancelled,
+        DownloadError,
+        SecurityError,
+        asyncio.CancelledError,
+        AssertionError,
+        TypeError,
+        ValueError,
+        MemoryError,
+        KeyboardInterrupt,
+        SystemExit,
+    )
     pending = [exc]
     seen: set[int] = set()
     while pending:
@@ -413,7 +468,22 @@ def _is_retryable_connection_error(exc: BaseException) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, (httpx.TransportError, ssl.SSLError, ConnectionError)):
+        if isinstance(current, non_retryable):
+            # A deterministic outer exception can still wrap a transient socket
+            # cause (for example DNS validation), so inspect only its cause.
+            if current.__cause__ is not None:
+                pending.append(current.__cause__)
+            continue
+        if isinstance(
+            current,
+            (
+                _RetryableNetworkError,
+                httpx.TransportError,
+                ssl.SSLError,
+                socket.gaierror,
+                ConnectionError,
+            ),
+        ):
             return True
         if isinstance(current, OSError) and current.errno in _RETRYABLE_CONNECTION_ERRNOS:
             return True
@@ -423,6 +493,28 @@ def _is_retryable_connection_error(exc: BaseException) -> bool:
             pending.append(current.__context__)
         pending.extend(item for item in current.args if isinstance(item, BaseException))
     return False
+
+
+def _is_definitely_non_retryable(exc: BaseException) -> bool:
+    """Reject programming, cancellation, security, and deterministic failures."""
+    return isinstance(
+        exc,
+        (
+            DownloadCancelled,
+            DownloadError,
+            SecurityError,
+            asyncio.CancelledError,
+            AssertionError,
+            TypeError,
+            ValueError,
+            MemoryError,
+        ),
+    )
+
+
+def _retry_delay(failed_attempt: int) -> int:
+    """Wait 3 seconds after the first failure, then 5 seconds thereafter."""
+    return 3 if failed_attempt == 1 else 5
 
 
 async def _call(callback: Callable, value: object) -> None:

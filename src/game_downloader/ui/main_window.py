@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QProcess, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
@@ -35,9 +37,9 @@ from game_downloader.models import (
     GameEntry,
     GameRelease,
 )
-from game_downloader.security import safe_folder_name
 from game_downloader.settings import AppSettings, SettingsRepository
 from game_downloader.storage.browser_direct import BrowserDirectDownloader, BrowserOptions
+from game_downloader.ui.download_dialog import DownloadDialog
 from game_downloader.ui.settings_dialog import SettingsDialog
 from game_downloader.ui.theme import load_theme
 from game_downloader.ui.workers import (
@@ -72,6 +74,9 @@ class MainWindow(QMainWindow):
         self.active_provider = None
         self.active_download_worker: BrowserDirectWorker | None = None
         self.cancellation_pending = False
+        self.download_destination = settings.default_download_folder.expanduser()
+        self.download_auto_extract = settings.auto_extract_zip
+        self.shutdown_after_completion = False
         self.workers: set[CoroutineWorker | BrowserDirectWorker | ExtractionWorker] = set()
         self.theme_path = self.repository.path.parent / "theme.json"
         self.setWindowTitle("Ipsum İndirici")
@@ -385,6 +390,36 @@ class MainWindow(QMainWindow):
             self.status.setText("Bir sonuç seç.")
             return
         entry = self.entries[row]
+        cover_url = (
+            str(entry.image_url or entry.cover_url)
+            if entry.image_url or entry.cover_url
+            else None
+        )
+        download_name = (
+            entry.source.downloads[0].name
+            if entry.source and entry.source.downloads
+            else ""
+        )
+        archive_available = not download_name or Path(download_name).suffix.lower() in {
+            ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2"
+        }
+        dialog = DownloadDialog(
+            destination=self.settings.default_download_folder,
+            game_size=entry.archive_size,
+            auto_extract=self.settings.auto_extract_zip,
+            game_title=entry.title,
+            game_version=entry.version,
+            cover_data=self.image_cache.get(cover_url) if cover_url else None,
+            archive_available=archive_available,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.status.setText("İndirme seçimi iptal edildi")
+            return
+        choices = dialog.choices()
+        self.download_destination = choices.destination
+        self.download_auto_extract = choices.auto_extract
+        self.shutdown_after_completion = choices.shutdown_after_completion
         self._set_browsing_enabled(False)
         self.search_button.setEnabled(False)
         self.select_button.setEnabled(False)
@@ -424,9 +459,7 @@ class MainWindow(QMainWindow):
             self.current_release.source, BrowserDirectSource
         ):
             return
-        folder = self.settings.default_download_folder.expanduser() / safe_folder_name(
-            self.current_release.title
-        )
+        folder = self.download_destination
         max_speed = None
         if self.limit_speed_checkbox.isChecked():
             max_speed = round(self.limit_speed_spin.value() * 1_000_000 / 8)
@@ -441,7 +474,7 @@ class MainWindow(QMainWindow):
         worker.succeeded.connect(self._direct_download_finished)
         worker.cancelled.connect(self._download_cancelled)
         worker.failed.connect(self._download_failed)
-        phases = 3 if self.settings.auto_extract_zip else 1
+        phases = 3 if self.download_auto_extract else 1
         self.part_progress_label.setText(f"Aşama 1/{phases} · İndirme hazırlanıyor…")
         self.total_progress_label.setText("Toplam süreç: %0")
         self.part_eta_label.setText("Bu aşamanın kalan süresi: hesaplanıyor…")
@@ -462,13 +495,16 @@ class MainWindow(QMainWindow):
                 headless=self.settings.browser_headless,
                 timeout_seconds=self.settings.browser_timeout_seconds,
             ),
-            manager=DownloadManager(max_bytes_per_second=max_bytes_per_second),
+            manager=DownloadManager(
+                max_bytes_per_second=max_bytes_per_second,
+                max_attempts=self.settings.download_max_attempts,
+            ),
         )
 
     def _direct_download_progress(self, value: object) -> None:
         self._enable_transfer_controls()
         progress = DownloadProgress.model_validate(value)
-        phases = 3 if self.settings.auto_extract_zip else 1
+        phases = 3 if self.download_auto_extract else 1
         percent = "—" if progress.percent is None else f"%{progress.percent:.1f}"
         text = (
             f"{_format_bytes(progress.downloaded)} / {_format_bytes(progress.total)} "
@@ -507,7 +543,7 @@ class MainWindow(QMainWindow):
         self.total_progress.setRange(0, 100)
         self.total_progress.setValue(100)
         uses_three_phases = (
-            self.settings.auto_extract_zip
+            self.download_auto_extract
             and self.downloaded_path is not None
             and self.downloaded_path.suffix.casefold() == ".zip"
         )
@@ -531,6 +567,7 @@ class MainWindow(QMainWindow):
             self._start_extraction()
             return
         self.status.setText(f"Tamamlandı: {self.downloaded_path.name}")
+        self._perform_completion_action()
 
     def _download_failed(self, message: str) -> None:
         self._reset_download_progress()
@@ -773,7 +810,18 @@ class MainWindow(QMainWindow):
         self.cancellation_pending = True
         self.pause_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
-        self.status.setText("İndirme iptal ediliyor; yarım dosya korunacak…")
+        self.status.setText("İndirme hemen iptal ediliyor…")
+        QTimer.singleShot(2000, lambda target=worker: self._force_cancel_if_needed(target))
+
+    def _force_cancel_if_needed(self, worker: BrowserDirectWorker) -> None:
+        if self.active_download_worker is not worker or not worker.isRunning():
+            return
+        logger.warning("Graceful cancellation exceeded two seconds; terminating worker thread")
+        worker.terminate()
+        worker.wait(250)
+        self._download_cancelled(
+            "İndirme 2 saniyede kapanmadığı için zorla durduruldu; yarım dosya korundu."
+        )
 
     def _extract(self) -> None:
         self._start_extraction()
@@ -882,6 +930,7 @@ class MainWindow(QMainWindow):
             self.part_eta_label.setText("Bu aşamanın kalan süresi: 0 sn")
             self.total_eta_label.setText("Toplam kalan süre: 0 sn")
             self.status.setText("Tüm aşamalar tamamlandı")
+            self._perform_completion_action()
         else:
             self.part_progress.setValue(0)
             self.part_progress_label.setText("Aşama 3/3 · ZIP dosyası silinemedi")
@@ -890,6 +939,21 @@ class MainWindow(QMainWindow):
             self.part_eta_label.setText("Bu aşamanın kalan süresi: —")
             self.total_eta_label.setText("Toplam kalan süre: —")
             self.status.setText("Arşiv çıkarıldı; ZIP dosyası silinemedi")
+
+    def _perform_completion_action(self) -> None:
+        if not self.shutdown_after_completion:
+            return
+        self.shutdown_after_completion = False
+        if sys.platform == "win32":
+            started = QProcess.startDetached("shutdown", ["/s", "/t", "0"])
+        elif sys.platform == "darwin":
+            started = QProcess.startDetached(
+                "osascript", ["-e", 'tell application "System Events" to shut down']
+            )
+        else:
+            started = QProcess.startDetached("systemctl", ["poweroff"])
+        if not started:
+            self._show_error("Bilgisayarı kapatma komutu başlatılamadı.")
 
     def _open_extracted_folder(self) -> None:
         if self.extracted_path:
