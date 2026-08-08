@@ -4,11 +4,12 @@ import io
 import logging
 import threading
 import zipfile
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from game_downloader.archive.extractor import ArchiveExtractor
+from game_downloader.archive.extractor import ArchiveError, ArchiveExtractor
 from game_downloader.archive.http_range import HttpRangeFile, RangeNotSupported
 
 
@@ -168,3 +169,128 @@ def test_next_range_block_is_prefetched_in_background() -> None:
             assert second_block_requested.wait(1)
     finally:
         client.close()
+
+
+def test_range_blocks_are_restored_from_persistent_cache(tmp_path) -> None:
+    payload = bytes(range(192))
+    cache = tmp_path / "ranges"
+    first_client, first_ranges = _range_client(payload)
+    try:
+        with HttpRangeFile(
+            "https://cdn.example/game.zip",
+            client=first_client,
+            block_size=64,
+            prefetch=False,
+            disk_cache=cache,
+        ) as remote:
+            assert remote.read(70) == payload[:70]
+    finally:
+        first_client.close()
+
+    second_client, second_ranges = _range_client(payload)
+    try:
+        with HttpRangeFile(
+            "https://cdn.example/new-signed-url.zip",
+            client=second_client,
+            block_size=64,
+            prefetch=False,
+            disk_cache=cache,
+        ) as remote:
+            assert remote.downloaded == 128
+            assert remote.read(70) == payload[:70]
+            assert remote.downloaded == 128
+    finally:
+        second_client.close()
+
+    assert first_ranges == [(0, 0), (0, 191), (0, 63), (64, 127)]
+    assert second_ranges == [(0, 0), (0, 191)]
+
+
+def test_persistent_range_cache_is_bounded(tmp_path) -> None:
+    payload = bytes(range(192))
+    cache = tmp_path / "ranges"
+    client, _ranges = _range_client(payload)
+    try:
+        with HttpRangeFile(
+            "https://cdn.example/game.zip",
+            client=client,
+            block_size=64,
+            prefetch=False,
+            disk_cache=cache,
+            disk_cache_max_bytes=128,
+        ) as remote:
+            assert remote.read() == payload
+    finally:
+        client.close()
+
+    blocks = list(cache.glob("*/block-*.bin"))
+    assert len(blocks) == 2
+    assert sum(path.stat().st_size for path in blocks) == 128
+
+
+def test_remote_zip_resume_keeps_completed_members(caplog, tmp_path) -> None:
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("first.bin", b"a" * 32)
+        archive.writestr("second.bin", b"b" * 32)
+    destination = tmp_path / "game"
+    workspace = tmp_path / ".game.ondemand.part"
+
+    def interrupt_after_first_file(extracted: int, _total: int) -> None:
+        if extracted > 32:
+            raise RuntimeError("connection lost")
+
+    with pytest.raises(RuntimeError, match="connection lost"):
+        ArchiveExtractor().extract_zip_stream(
+            io.BytesIO(payload.getvalue()),
+            destination,
+            archive_size=len(payload.getvalue()),
+            progress=interrupt_after_first_file,
+            resume_workspace=workspace,
+        )
+
+    assert (workspace / "extracted" / "first.bin").read_bytes() == b"a" * 32
+    assert not destination.exists()
+
+    resumed = []
+    with caplog.at_level(logging.INFO):
+        result = ArchiveExtractor().extract_zip_stream(
+            io.BytesIO(payload.getvalue()),
+            destination,
+            archive_size=len(payload.getvalue()),
+            resume_workspace=workspace,
+            resume_progress=lambda offset, members: resumed.append((offset, members)),
+        )
+
+    assert result.destination == destination
+    assert (destination / "first.bin").read_bytes() == b"a" * 32
+    assert (destination / "second.bin").read_bytes() == b"b" * 32
+    assert resumed[0][0] > 0
+    assert resumed[0][1] == 1
+    assert "Remote ZIP member restored from checkpoint member='first.bin'" in caplog.text
+
+
+def test_remote_zip_uses_metadata_for_exact_storage_preflight(
+    monkeypatch, tmp_path
+) -> None:
+    payload = _zip_bytes()
+    workspace = tmp_path / ".game.ondemand.part"
+    estimates = []
+    monkeypatch.setattr(
+        "game_downloader.archive.extractor.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=10),
+    )
+
+    with pytest.raises(ArchiveError, match="ZIP açıldığında"):
+        ArchiveExtractor().extract_zip_stream(
+            io.BytesIO(payload),
+            tmp_path / "game",
+            archive_size=len(payload),
+            resume_workspace=workspace,
+            working_storage_size=128,
+            storage_progress=estimates.append,
+        )
+
+    assert estimates[0].extracted_size == len(b"wanted content") + 256 * 40
+    assert estimates[0].peak_size == estimates[0].extracted_size + 128
+    assert estimates[0].enough is False

@@ -8,6 +8,7 @@ from game_downloader.storage.browser_direct import (
     CAPTCHA_SELECTOR,
     DOWNLOAD_DIALOG_SELECTOR,
     BrowserDirectDownloader,
+    PreparedBrowserDownload,
     UpgradeRequiredError,
     download_id_from_click,
     resolved_from_response,
@@ -450,3 +451,33 @@ def test_browser_worker_passes_on_demand_mode_only_when_enabled(tmp_path):
         {},
         {"stream_extract_zip": True, "extraction_limits": None},
     ]
+
+
+def test_browser_worker_uses_prepared_url_without_resolving_browser_again(tmp_path):
+    from game_downloader.ui.workers import BrowserDirectWorker
+
+    calls = []
+
+    class Downloader:
+        async def download_prepared(
+            self, prepared, destination, *, progress, notice, **options
+        ):
+            calls.append((prepared, destination, options))
+            return destination / "demo.zip"
+
+    source = BrowserDirectSource(
+        page_url="https://catalog.example/game",
+        downloads=[BrowserDownloadRecord(id="7", name="demo.zip")],
+    )
+    prepared = PreparedBrowserDownload(
+        resolved=resolved_from_response(
+            {"success": True, "download_url": "https://cdn.example/demo.zip"},
+            source.downloads[0],
+            str(source.page_url),
+        )
+    )
+    BrowserDirectWorker(
+        Downloader(), source, tmp_path, prepared=prepared
+    ).run()
+
+    assert calls == [(prepared, tmp_path, {})]

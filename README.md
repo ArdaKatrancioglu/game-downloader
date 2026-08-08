@@ -73,11 +73,22 @@ sistem Downloads klasörü seçilir. Aynı değerler sırasıyla
 **Ayarlar** içindeki “On-demand: HTTP Range ile ZIP'i indirirken çıkar” seçeneği
 aktifse uygulama ZIP dizinini uzaktan okur ve üyeleri gereken bloklar geldikçe
 hedef klasöre çıkarır. Range aktarımı 8 MiB bloklar kullanır ve mevcut blok
-çıkarılırken sıradaki bloğu arka planda önceden getirir. Tam ZIP bu yolda diske
-yazılmaz. Seçenek kapalıysa ZIP tek
+çıkarılırken sıradaki bloğu arka planda önceden getirir. Kaldığı yerden devam
+edebilmek için kullanılan disk cache'i LRU olarak en fazla 512 MiB tutulur;
+tam ZIP bu yolda diske yazılmaz. Bu nedenle peak disk kullanımı yaklaşık olarak
+çıkarılmış içerik boyutu + 512 MiB çalışma alanıdır. Cache sınırından çıkarılan
+yarım bir ZIP üyesi kesintiden sonra yeniden indirilebilir, tamamlanmış üyelerse
+CRC checkpoint'i sayesinde atlanır. Seçenek kapalıysa ZIP tek
 sıralı bağlantıyla indirilir ve otomatik çıkarma açıksa indirme tamamlandıktan
 sonra çıkarılır. Sunucu Range isteklerini desteklemiyorsa da bu sıralı akışa
 otomatik dönülür. RAR, 7z ve TAR arşivleri normal indirme yolunu kullanır.
+ZIP dizini okunduktan sonra üyelerin `file_size` değerleri toplanır; kesin
+açılmış boyut, yaklaşık peak kullanım ve mevcut checkpoint düşüldükten sonra
+gereken ek boş alan loglanıp yeniden denetlenir. Katalog boyutu bu kesin
+kontrolden önce yalnızca ilk tahmin olarak kullanılır. Ana ekrandaki **İndir**
+düğmesi önce geçici URL'yi ve Central Directory metadata'sını hazırlar; oyun
+seçenekleri popup'ı kesin açılmış boyut ve peak alan öğrenildikten sonra açılır.
+Bulk aktarım ancak bu popup onaylandıktan sonra başlar.
 
 Bir arama sonucu seçilip **İndir** düğmesine basıldığında tarayıcı aynı işlem
 içinde modalı açar, ilk görünür Download kaydını seçer ve indirmeyi başlatır.

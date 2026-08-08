@@ -41,6 +41,7 @@ from game_downloader.settings import AppSettings, SettingsRepository
 from game_downloader.storage.browser_direct import (
     BrowserDirectDownloader,
     BrowserOptions,
+    PreparedBrowserDownload,
     RemoteExtractionResult,
 )
 from game_downloader.ui.download_dialog import DownloadDialog
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
         self.image_request_token = 0
         self.active_provider = None
         self.active_download_worker: BrowserDirectWorker | None = None
+        self.prepared_download: PreparedBrowserDownload | None = None
         self.cancellation_pending = False
         self.download_destination = settings.default_download_folder.expanduser()
         self.download_auto_extract = settings.auto_extract_zip
@@ -397,50 +399,27 @@ class MainWindow(QMainWindow):
             self.status.setText("Bir sonuç seç.")
             return
         entry = self.entries[row]
-        cover_url = (
-            str(entry.image_url or entry.cover_url)
-            if entry.image_url or entry.cover_url
-            else None
-        )
-        download_name = (
-            entry.source.downloads[0].name
-            if entry.source and entry.source.downloads
-            else ""
-        )
-        download_suffix = Path(download_name).suffix.lower()
-        archive_available = not download_suffix or download_suffix in {
-            ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2"
-        }
-        dialog = DownloadDialog(
-            destination=self.settings.default_download_folder,
-            game_size=entry.archive_size,
-            auto_extract=self.settings.auto_extract_zip,
-            game_title=entry.title,
-            game_version=entry.version,
-            cover_data=self.image_cache.get(cover_url) if cover_url else None,
-            archive_available=archive_available,
-            parent=self,
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            self.status.setText("İndirme seçimi iptal edildi")
-            return
-        choices = dialog.choices()
-        self.download_destination = choices.destination
-        self.download_auto_extract = choices.auto_extract
-        self.download_on_demand_extract = (
-            choices.auto_extract and self.settings.on_demand_zip_extraction
-        )
-        self.shutdown_after_completion = choices.shutdown_after_completion
         self._set_browsing_enabled(False)
         self.search_button.setEnabled(False)
         self.select_button.setEnabled(False)
         self.results.setEnabled(False)
-        self.status.setText("Bağlantı bulunuyor…")
+        self.status.setText("Bağlantı bulunuyor ve ZIP metadata hazırlanıyor…")
 
-        async def prepare() -> GameRelease:
+        async def prepare() -> tuple[GameRelease, PreparedBrowserDownload]:
             if self.active_provider is None:
                 raise LookupError("Run the catalog search again.")
-            return await self.active_provider.get_release(entry.id)
+            release = await self.active_provider.get_release(entry.id)
+            if not isinstance(release.source, BrowserDirectSource):
+                raise LookupError("Seçilen kaynak doğrudan indirmeyi desteklemiyor.")
+            prepared = await self._browser_downloader().prepare(
+                release.source,
+                inspect_zip=self.settings.on_demand_zip_extraction,
+                extraction_limits=ExtractionLimits(
+                    max_total_size=self.settings.max_extracted_archive_size,
+                    max_files=self.settings.max_extracted_file_count,
+                ),
+            )
+            return release, prepared
 
         worker = CoroutineWorker(prepare)
         worker.succeeded.connect(self._release_ready)
@@ -448,7 +427,9 @@ class MainWindow(QMainWindow):
         self._start_worker(worker)
 
     def _release_ready(self, value: object) -> None:
-        self.current_release = value
+        release, prepared = value
+        self.current_release = release
+        self.prepared_download = prepared
         self.archive_label.setText(self.current_release.title)
         self.version_label.setText(self.current_release.version)
         self.size_label.setText(_format_bytes(self.current_release.archive_size))
@@ -456,9 +437,56 @@ class MainWindow(QMainWindow):
         self.overview_label.setText(
             _truncate_description(self.current_release.description) or "—"
         )
+        self._show_prepared_download_dialog()
+
+    def _show_prepared_download_dialog(self) -> None:
+        if self.current_release is None or self.prepared_download is None:
+            return
+        entry = self.current_release
+        prepared = self.prepared_download
+        cover_url = (
+            str(entry.image_url or entry.cover_url)
+            if entry.image_url or entry.cover_url
+            else None
+        )
+        suffix = Path(prepared.resolved.filename).suffix.lower()
+        archive_available = suffix in {
+            ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2"
+        }
+        on_demand_available = prepared.zip_metadata is not None
+        metadata = prepared.zip_metadata
+        dialog = DownloadDialog(
+            destination=self.settings.default_download_folder,
+            game_size=metadata.archive_size if metadata else entry.archive_size,
+            auto_extract=self.settings.auto_extract_zip,
+            game_title=entry.title,
+            game_version=entry.version,
+            cover_data=self.image_cache.get(cover_url) if cover_url else None,
+            archive_available=archive_available,
+            on_demand_extract=(
+                self.settings.on_demand_zip_extraction and on_demand_available
+            ),
+            exact_extracted_size=metadata.extracted_size if metadata else None,
+            parent=self,
+        )
+        self._set_browsing_enabled(True)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.prepared_download = None
+            self.status.setText("İndirme seçimi iptal edildi")
+            return
+        choices = dialog.choices()
+        self.download_destination = choices.destination
+        self.download_auto_extract = choices.auto_extract
+        self.download_on_demand_extract = (
+            choices.auto_extract
+            and self.settings.on_demand_zip_extraction
+            and on_demand_available
+        )
+        self.shutdown_after_completion = choices.shutdown_after_completion
         self._download_browser_direct()
 
     def _prepare_failed(self, message: str) -> None:
+        self.prepared_download = None
         self._set_browsing_enabled(True)
         self.search_button.setEnabled(True)
         self.select_button.setEnabled(self.results.currentRow() >= 0)
@@ -488,7 +516,9 @@ class MainWindow(QMainWindow):
                 max_total_size=self.settings.max_extracted_archive_size,
                 max_files=self.settings.max_extracted_file_count,
             ),
+            prepared=self.prepared_download,
         )
+        self.prepared_download = None
         self.active_download_worker = worker
         worker.notice.connect(self.status.setText)
         worker.progress.connect(self._direct_download_progress)
@@ -641,6 +671,7 @@ class MainWindow(QMainWindow):
         self.status.setText(message)
 
     def _clear_selected_result(self) -> None:
+        self.prepared_download = None
         self.current_release = None
         self.results.clearSelection()
         self.results.setCurrentRow(-1)
@@ -857,9 +888,15 @@ class MainWindow(QMainWindow):
         dialog.setIcon(QMessageBox.Icon.Warning)
         dialog.setWindowTitle("İndirmeyi iptal et")
         dialog.setText("İndirme iptal edilsin mi?")
-        dialog.setInformativeText(
-            "Aktarım durur; yarım .part dosyası daha sonra devam edebilmek için korunur."
-        )
+        if self.download_on_demand_extract:
+            dialog.setInformativeText(
+                "Aktarım durur; indirilen Range blokları ve tamamlanan dosyalar "
+                "daha sonra devam edebilmek için korunur."
+            )
+        else:
+            dialog.setInformativeText(
+                "Aktarım durur; yarım .part dosyası daha sonra devam edebilmek için korunur."
+            )
         confirm = dialog.addButton("İndirmeyi iptal et", QMessageBox.ButtonRole.DestructiveRole)
         dialog.addButton(QMessageBox.StandardButton.No)
         dialog.exec()
@@ -878,8 +915,13 @@ class MainWindow(QMainWindow):
         logger.warning("Graceful cancellation exceeded two seconds; terminating worker thread")
         worker.terminate()
         worker.wait(250)
+        preserved = (
+            "on-demand devam verileri"
+            if self.download_on_demand_extract
+            else "yarım dosya"
+        )
         self._download_cancelled(
-            "İndirme 2 saniyede kapanmadığı için zorla durduruldu; yarım dosya korundu."
+            f"İndirme 2 saniyede kapanmadığı için zorla durduruldu; {preserved} korundu."
         )
 
     def _extract(self) -> None:

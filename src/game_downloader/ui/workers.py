@@ -18,7 +18,10 @@ from game_downloader.models import (
     ExtractionLimits,
     ResolvedDownload,
 )
-from game_downloader.storage.browser_direct import BrowserDirectDownloader
+from game_downloader.storage.browser_direct import (
+    BrowserDirectDownloader,
+    PreparedBrowserDownload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +183,7 @@ class BrowserDirectWorker(QThread):
         *,
         stream_extract_zip: bool = False,
         extraction_limits: ExtractionLimits | None = None,
+        prepared: PreparedBrowserDownload | None = None,
     ) -> None:
         super().__init__()
         self.downloader = downloader
@@ -187,6 +191,7 @@ class BrowserDirectWorker(QThread):
         self.destination = destination
         self.stream_extract_zip = stream_extract_zip
         self.extraction_limits = extraction_limits
+        self.prepared = prepared
         self.loop: asyncio.AbstractEventLoop | None = None
         self.task: asyncio.Task[object] | None = None
 
@@ -197,18 +202,33 @@ class BrowserDirectWorker(QThread):
             if self.stream_extract_zip:
                 options["stream_extract_zip"] = True
                 options["extraction_limits"] = self.extraction_limits
-            self.task = asyncio.create_task(
-                self.downloader.download(
-                    self.source, self.destination,
-                    progress=self.progress.emit, notice=self.notice.emit,
+            if self.prepared is None:
+                operation = self.downloader.download(
+                    self.source,
+                    self.destination,
+                    progress=self.progress.emit,
+                    notice=self.notice.emit,
                     **options,
                 )
-            )
+            else:
+                operation = self.downloader.download_prepared(
+                    self.prepared,
+                    self.destination,
+                    progress=self.progress.emit,
+                    notice=self.notice.emit,
+                    **options,
+                )
+            self.task = asyncio.create_task(operation)
             return await self.task
         try:
             result = asyncio.run(execute())
         except asyncio.CancelledError:
-            self.cancelled.emit("İndirme hemen iptal edildi; yarım dosya korundu.")
+            if self.stream_extract_zip:
+                self.cancelled.emit(
+                    "İndirme iptal edildi; on-demand devam verileri korundu."
+                )
+            else:
+                self.cancelled.emit("İndirme hemen iptal edildi; yarım dosya korundu.")
         except DownloadCancelled as exc:
             self.cancelled.emit(str(exc))
         except Exception as exc:

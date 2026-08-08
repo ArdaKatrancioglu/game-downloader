@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from game_downloader.archive.http_range import DEFAULT_DISK_CACHE_BYTES
+
 
 @dataclass(frozen=True)
 class DownloadChoices:
@@ -40,11 +42,15 @@ class DownloadDialog(QDialog):
         game_version: str = "Unknown",
         cover_data: bytes | None = None,
         archive_available: bool = True,
+        on_demand_extract: bool = False,
+        exact_extracted_size: int | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.game_size = game_size
         self.game_version = game_version
+        self.on_demand_extract = on_demand_extract
+        self.exact_extracted_size = exact_extracted_size
         self.setWindowTitle(f"{game_title}’i indir")
         self.setModal(True)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -207,10 +213,12 @@ class DownloadDialog(QDialog):
             self.folder.setText(selected)
 
     def _required_space(self) -> int | None:
-        if self.game_size is None:
-            return None
-        # Extraction temporarily keeps both the archive and extracted content.
-        return int(self.game_size * (2.5 if self.auto_extract.isChecked() else 1.0))
+        return _required_download_space(
+            self.game_size,
+            auto_extract=self.auto_extract.isChecked(),
+            on_demand_extract=self.on_demand_extract,
+            exact_extracted_size=self.exact_extracted_size,
+        )
 
     def _update_space(self, _value: object = None) -> None:
         folder = Path(self.folder.text()).expanduser()
@@ -236,15 +244,30 @@ class DownloadDialog(QDialog):
         self.free_label.setText(f"{formatted_free} kullanılabilir")
         summary = f"Sürüm {self.game_version} · {_format_bytes(self.game_size)}"
         self.header_summary.setText(summary)
-        self.size_summary.setText(summary)
-        self.required_space_label.setText(
-            (
-                f"İndirme: {_format_bytes(self.game_size)} · "
-                f"Tahmini toplam alan: {_format_bytes(required)}"
-            )
-            if self.auto_extract.isChecked() and required is not None
-            else ""
+        self.size_summary.setText(
+            f"Açılmış boyut: {_format_bytes(self.exact_extracted_size)}"
+            if self.exact_extracted_size is not None
+            else summary
         )
+        if self.auto_extract.isChecked() and self.on_demand_extract:
+            if self.exact_extracted_size is not None:
+                required_text = (
+                    f"Kesin açılmış boyut: {_format_bytes(self.exact_extracted_size)} · "
+                    f"Tahmini peak alan: {_format_bytes(required)}"
+                )
+            else:
+                required_text = (
+                    f"Metadata kontrolü için geçici alan: {_format_bytes(required)} · "
+                    "Kesin açılmış boyut ZIP dizininden okunacak"
+                )
+        elif self.auto_extract.isChecked() and required is not None:
+            required_text = (
+                f"İndirme: {_format_bytes(self.game_size)} · "
+                f"Tahmini peak alan: {_format_bytes(required)}"
+            )
+        else:
+            required_text = ""
+        self.required_space_label.setText(required_text)
         if not self.folder.text().strip():
             error = "Bir indirme klasörü seçin."
         elif not valid_folder:
@@ -280,6 +303,27 @@ def _format_bytes(value: int | None) -> str:
             return f"{amount:.1f} {unit}"
         amount /= 1024
     return "Bilinmiyor"
+
+
+def _required_download_space(
+    game_size: int | None,
+    *,
+    auto_extract: bool,
+    on_demand_extract: bool,
+    exact_extracted_size: int | None = None,
+) -> int | None:
+    if on_demand_extract and auto_extract:
+        if exact_extracted_size is not None:
+            return exact_extracted_size + DEFAULT_DISK_CACHE_BYTES
+        # The first button performs only the Range/central-directory preflight.
+        # Exact extracted size is unavailable until that metadata has been read.
+        return DEFAULT_DISK_CACHE_BYTES
+    if game_size is None:
+        return None
+    if not auto_extract:
+        return game_size
+    # Normal extraction temporarily keeps both the archive and extracted content.
+    return int(game_size * 2.5)
 
 
 _MODAL_STYLE = """

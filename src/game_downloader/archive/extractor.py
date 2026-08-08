@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -10,8 +12,10 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -19,6 +23,8 @@ from game_downloader.models import ExtractionLimits, ExtractionResult
 
 logger = logging.getLogger(__name__)
 ExtractionProgressCallback = Callable[[int, int], None]
+ResumeProgressCallback = Callable[[int, int], None]
+StorageProgressCallback = Callable[["StorageEstimate"], None]
 
 _ZIP_COMPRESSION_NAMES = {
     0: "stored",
@@ -42,6 +48,29 @@ class ArchiveMember:
     size: int
     compressed_size: int
     is_directory: bool = False
+
+
+@dataclass(frozen=True)
+class StorageEstimate:
+    extracted_size: int
+    cache_budget: int
+    peak_size: int
+    safety_margin: int
+    current_workspace_size: int
+    free_space: int
+    additional_required: int
+
+    @property
+    def enough(self) -> bool:
+        return self.free_space >= self.additional_required
+
+
+@dataclass(frozen=True)
+class ZipStreamMetadata:
+    archive_size: int
+    extracted_size: int
+    compressed_members_size: int
+    file_count: int
 
 
 class ArchiveExtractor:
@@ -207,75 +236,193 @@ class ArchiveExtractor:
         *,
         archive_size: int,
         progress: ExtractionProgressCallback | None = None,
+        resume_workspace: Path | None = None,
+        resume_progress: ResumeProgressCallback | None = None,
+        working_storage_size: int = 0,
+        storage_progress: StorageProgressCallback | None = None,
     ) -> ExtractionResult:
         """Safely extract a seekable remote ZIP without materializing the ZIP on disk."""
         if destination.exists():
             raise ArchiveError("The extraction destination already exists.")
         with zipfile.ZipFile(archive) as source:
-            infos = source.infolist()
-            methods = Counter(info.compress_type for info in infos if not info.is_dir())
-            method_summary = _zip_compression_summary(methods)
-            logger.info(
-                "Remote ZIP compression methods methods=%s files=%d",
-                method_summary,
-                sum(methods.values()),
-            )
-            supported = {
-                zipfile.ZIP_STORED,
-                zipfile.ZIP_DEFLATED,
-                zipfile.ZIP_BZIP2,
-                zipfile.ZIP_LZMA,
-            }
-            if zstandard := getattr(zipfile, "ZIP_ZSTANDARD", None):
-                supported.add(zstandard)
-            unsupported = {
-                method: count
-                for method, count in methods.items()
-                if method not in supported
-            }
-            if unsupported:
-                unsupported_summary = _zip_compression_summary(unsupported)
-                logger.warning(
-                    "Remote ZIP compression unsupported methods=%s",
-                    unsupported_summary,
-                )
-                raise NotImplementedError(
-                    f"Unsupported ZIP compression methods: {unsupported_summary}"
-                )
-            members = [
-                ArchiveMember(
-                    name=info.filename,
-                    size=info.file_size,
-                    compressed_size=info.compress_size,
-                    is_directory=info.is_dir(),
-                )
-                for info in infos
-            ]
-            if any(_zip_is_link(info) for info in infos):
-                raise ArchiveError("The archive contains a symbolic link.")
-            self._validate_members(members, archive_size)
-            total_size = sum(item.size for item in members if not item.is_directory)
+            metadata, infos, members = self._inspect_zip_source(source, archive_size)
+            total_size = metadata.extracted_size
             if progress:
                 progress(0, total_size)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = Path(
-                tempfile.mkdtemp(
-                    prefix=f".{destination.name}.extracting-", dir=destination.parent
+            if resume_workspace is None:
+                temporary = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{destination.name}.extracting-", dir=destination.parent
+                    )
                 )
-            )
+            else:
+                temporary = self._prepare_remote_resume_workspace(
+                    resume_workspace, infos
+                )
+                estimate = _storage_estimate(
+                    resume_workspace,
+                    destination.parent,
+                    total_size,
+                    working_storage_size,
+                )
+                logger.info(
+                    "Remote ZIP storage preflight extracted_size=%d cache_budget=%d "
+                    "peak_size=%d safety_margin=%d current_workspace_size=%d "
+                    "free_space=%d additional_required=%d result=%s",
+                    estimate.extracted_size,
+                    estimate.cache_budget,
+                    estimate.peak_size,
+                    estimate.safety_margin,
+                    estimate.current_workspace_size,
+                    estimate.free_space,
+                    estimate.additional_required,
+                    "enough" if estimate.enough else "insufficient",
+                )
+                if storage_progress:
+                    storage_progress(estimate)
+                if not estimate.enough:
+                    raise ArchiveError(
+                        "ZIP açıldığında "
+                        f"{_format_size(estimate.extracted_size)} olacak; on-demand için "
+                        f"yaklaşık {_format_size(estimate.additional_required)} ek boş alan "
+                        f"gerekiyor, ancak {_format_size(estimate.free_space)} kullanılabilir."
+                    )
             try:
-                self._extract_zip_source(source, temporary, progress, total_size)
+                self._extract_zip_source(
+                    source,
+                    temporary,
+                    progress,
+                    total_size,
+                    resume=resume_workspace is not None,
+                    resume_progress=resume_progress,
+                )
                 if progress:
                     progress(total_size, total_size)
                 os.replace(temporary, destination)
             except Exception:
-                shutil.rmtree(temporary, ignore_errors=True)
+                if resume_workspace is None:
+                    shutil.rmtree(temporary, ignore_errors=True)
+                else:
+                    logger.info(
+                        "Remote ZIP resume workspace preserved path=%s", resume_workspace
+                    )
                 raise
         return ExtractionResult(
             destination=destination,
             file_count=sum(not item.is_directory for item in members),
             total_size=total_size,
         )
+
+    def inspect_zip_stream(
+        self,
+        archive: object,
+        *,
+        archive_size: int,
+        validate_limits: bool = True,
+    ) -> ZipStreamMetadata:
+        """Read and validate only a remote ZIP central directory."""
+        with zipfile.ZipFile(archive) as source:
+            metadata, _infos, _members = self._inspect_zip_source(
+                source, archive_size, validate_limits=validate_limits
+            )
+        return metadata
+
+    def _inspect_zip_source(
+        self,
+        source: zipfile.ZipFile,
+        archive_size: int,
+        *,
+        validate_limits: bool = True,
+    ) -> tuple[ZipStreamMetadata, list[zipfile.ZipInfo], list[ArchiveMember]]:
+        infos = source.infolist()
+        methods = Counter(info.compress_type for info in infos if not info.is_dir())
+        method_summary = _zip_compression_summary(methods)
+        logger.info(
+            "Remote ZIP compression methods methods=%s files=%d",
+            method_summary,
+            sum(methods.values()),
+        )
+        supported = {
+            zipfile.ZIP_STORED,
+            zipfile.ZIP_DEFLATED,
+            zipfile.ZIP_BZIP2,
+            zipfile.ZIP_LZMA,
+        }
+        if zstandard := getattr(zipfile, "ZIP_ZSTANDARD", None):
+            supported.add(zstandard)
+        unsupported = {
+            method: count for method, count in methods.items() if method not in supported
+        }
+        if unsupported:
+            unsupported_summary = _zip_compression_summary(unsupported)
+            logger.warning("Remote ZIP compression unsupported methods=%s", unsupported_summary)
+            raise NotImplementedError(
+                f"Unsupported ZIP compression methods: {unsupported_summary}"
+            )
+        members = [
+            ArchiveMember(
+                name=info.filename,
+                size=info.file_size,
+                compressed_size=info.compress_size,
+                is_directory=info.is_dir(),
+            )
+            for info in infos
+        ]
+        if any(_zip_is_link(info) for info in infos):
+            raise ArchiveError("The archive contains a symbolic link.")
+        total_size = sum(item.size for item in members if not item.is_directory)
+        compressed_total = sum(
+            item.compressed_size for item in members if not item.is_directory
+        )
+        file_count = sum(not item.is_directory for item in members)
+        logger.info(
+            "Remote ZIP metadata files=%d archive_size=%d compressed_members_size=%d "
+            "extracted_total_size=%d",
+            file_count,
+            archive_size,
+            compressed_total,
+            total_size,
+        )
+        if validate_limits:
+            self._validate_members(members, archive_size)
+        return (
+            ZipStreamMetadata(
+                archive_size=archive_size,
+                extracted_size=total_size,
+                compressed_members_size=compressed_total,
+                file_count=file_count,
+            ),
+            infos,
+            members,
+        )
+
+    @staticmethod
+    def _prepare_remote_resume_workspace(
+        workspace: Path, infos: list[zipfile.ZipInfo]
+    ) -> Path:
+        workspace.mkdir(parents=True, exist_ok=True)
+        target = workspace / "extracted"
+        marker = workspace / "archive.json"
+        fingerprint = hashlib.sha256()
+        for info in infos:
+            fingerprint.update(info.filename.encode("utf-8", errors="surrogateescape"))
+            fingerprint.update(
+                f"\0{info.CRC}:{info.file_size}:{info.compress_size}:"
+                f"{info.compress_type}:{info.header_offset}\n".encode()
+            )
+        metadata = {"version": 1, "fingerprint": fingerprint.hexdigest()}
+        existing: object = None
+        with suppress(FileNotFoundError, json.JSONDecodeError, OSError):
+            existing = json.loads(marker.read_text(encoding="utf-8"))
+        if existing not in (None, metadata):
+            logger.warning("Remote ZIP changed; stale extraction checkpoint discarded")
+            shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True, exist_ok=True)
+        temporary_marker = marker.with_suffix(".json.tmp")
+        temporary_marker.write_text(json.dumps(metadata), encoding="utf-8")
+        os.replace(temporary_marker, marker)
+        return target
 
     def _validate_members(self, members: list[ArchiveMember], archive_size: int) -> None:
         files = [member for member in members if not member.is_directory]
@@ -296,7 +443,11 @@ class ArchiveExtractor:
                 if ratio > ratio_limit:
                     raise ArchiveError("The archive has a suspicious compression ratio.")
         if total > self.limits.max_total_size:
-            raise ArchiveError("The archive exceeds the configured extracted-size limit.")
+            raise ArchiveError(
+                "The archive exceeds the configured extracted-size limit: "
+                f"{_format_size(total)} extracted, "
+                f"{_format_size(self.limits.max_total_size)} allowed."
+            )
         if ratio_limit is not None and archive_size and total / archive_size > ratio_limit:
             raise ArchiveError("The archive has a suspicious overall compression ratio.")
 
@@ -316,20 +467,62 @@ class ArchiveExtractor:
         target: Path,
         progress: ExtractionProgressCallback | None = None,
         total_size: int = 0,
+        *,
+        resume: bool = False,
+        resume_progress: ResumeProgressCallback | None = None,
     ) -> None:
         extracted = 0
-        for info in source.infolist():
+        infos = source.infolist()
+        completed_offsets: set[int] = set()
+        if resume:
+            ordered = sorted(infos, key=lambda item: item.header_offset)
+            logical_offset = 0
+            for index, info in enumerate(ordered):
+                output = target / _safe_member_path(info.filename)
+                if info.is_dir():
+                    output.mkdir(parents=True, exist_ok=True)
+                    completed_offsets.add(info.header_offset)
+                elif _completed_zip_output(output, info):
+                    completed_offsets.add(info.header_offset)
+                else:
+                    break
+                if index + 1 < len(ordered):
+                    logical_offset = ordered[index + 1].header_offset
+                else:
+                    logical_offset = min(
+                        source.start_dir,
+                        info.header_offset + info.compress_size,
+                    )
+            if resume_progress:
+                resume_progress(logical_offset, len(completed_offsets))
+        for info in infos:
             output = target / _safe_member_path(info.filename)
             if info.is_dir():
                 output.mkdir(parents=True, exist_ok=True)
                 continue
             output.parent.mkdir(parents=True, exist_ok=True)
-            with source.open(info) as input_file, output.open("xb") as output_file:
+            if resume and info.header_offset in completed_offsets:
+                extracted += info.file_size
+                if progress:
+                    progress(extracted, total_size)
+                logger.info(
+                    "Remote ZIP member restored from checkpoint member=%r size=%d",
+                    info.filename,
+                    info.file_size,
+                )
+                continue
+            partial = output.with_name(output.name + ".part") if resume else output
+            if resume:
+                partial.unlink(missing_ok=True)
+                output.unlink(missing_ok=True)
+            with source.open(info) as input_file, partial.open("xb") as output_file:
                 while chunk := input_file.read(1024 * 1024):
                     output_file.write(chunk)
                     extracted += len(chunk)
                     if progress:
                         progress(extracted, total_size)
+            if resume:
+                os.replace(partial, output)
 
     @staticmethod
     def _extract_tar(
@@ -531,6 +724,63 @@ class ArchiveExtractor:
                 total += info.st_size
             if count > self.limits.max_files or total > self.limits.max_total_size:
                 raise ArchiveError("Extracted output exceeded the configured safety limits.")
+
+
+def _completed_zip_output(output: Path, info: zipfile.ZipInfo) -> bool:
+    try:
+        if not output.is_file() or output.stat().st_size != info.file_size:
+            return False
+        checksum = 0
+        with output.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                checksum = zlib.crc32(chunk, checksum)
+        return checksum & 0xFFFFFFFF == info.CRC
+    except OSError:
+        return False
+
+
+def _storage_estimate(
+    workspace: Path,
+    destination_parent: Path,
+    extracted_size: int,
+    cache_budget: int,
+) -> StorageEstimate:
+    current_workspace_size = 0
+    for path in workspace.rglob("*"):
+        try:
+            info = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode):
+            current_workspace_size += info.st_size
+    free_space = shutil.disk_usage(destination_parent).free
+    safety_margin = max(
+        256 * 1024**2,
+        min(1024**3, extracted_size // 100),
+    )
+    peak_size = extracted_size + cache_budget
+    additional_required = max(
+        0,
+        peak_size + safety_margin - current_workspace_size,
+    )
+    return StorageEstimate(
+        extracted_size=extracted_size,
+        cache_budget=cache_budget,
+        peak_size=peak_size,
+        safety_margin=safety_margin,
+        current_workspace_size=current_workspace_size,
+        free_space=free_space,
+        additional_required=additional_required,
+    )
+
+
+def _format_size(value: int) -> str:
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024 or unit == "TiB":
+            return f"{amount:.2f} {unit}" if unit != "B" else f"{int(amount)} B"
+        amount /= 1024
+    raise AssertionError("unreachable")
 
 
 def _safe_member_path(name: str) -> Path:

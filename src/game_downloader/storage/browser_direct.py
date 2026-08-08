@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import sys
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -11,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from game_downloader.archive.extractor import ArchiveExtractor
+from game_downloader.archive.extractor import (
+    ArchiveExtractor,
+    StorageEstimate,
+    ZipStreamMetadata,
+)
 from game_downloader.archive.http_range import (
     HttpRangeFile,
     RangeDownloadCancelled,
@@ -70,6 +75,12 @@ class RemoteExtractionResult:
     total_size: int
     archive_size: int
     downloaded_size: int
+
+
+@dataclass(frozen=True)
+class PreparedBrowserDownload:
+    resolved: ResolvedDownload
+    zip_metadata: ZipStreamMetadata | None = None
 
 
 def download_id_from_click(value: str | None) -> str | None:
@@ -173,6 +184,30 @@ class BrowserDirectDownloader:
         stream_extract_zip: bool = False,
         extraction_limits: ExtractionLimits | None = None,
     ) -> Path | RemoteExtractionResult:
+        prepared = await self.prepare(
+            source,
+            notice=notice,
+            inspect_zip=stream_extract_zip,
+            extraction_limits=extraction_limits,
+        )
+        return await self.download_prepared(
+            prepared,
+            destination,
+            progress=progress,
+            notice=notice,
+            stream_extract_zip=stream_extract_zip,
+            extraction_limits=extraction_limits,
+        )
+
+    async def prepare(
+        self,
+        source: BrowserDirectSource,
+        *,
+        notice: NoticeCallback | None = None,
+        inspect_zip: bool = False,
+        extraction_limits: ExtractionLimits | None = None,
+    ) -> PreparedBrowserDownload:
+        """Resolve the temporary URL and optionally inspect ZIP metadata only."""
         self._range_control.reset()
         await _notice(notice, "Tarayıcı başlatılıyor…")
         factory = self._playwright_factory
@@ -233,32 +268,75 @@ class BrowserDirectDownloader:
             context = None
             browser = None
             playwright = None
-            if stream_extract_zip and resolved.filename.casefold().endswith(".zip"):
-                await _notice(notice, "ZIP Range desteği denetleniyor…")
+            metadata = None
+            if inspect_zip and resolved.filename.casefold().endswith(".zip"):
+                await _notice(
+                    notice,
+                    "ZIP Central Directory okunuyor; bulk indirme henüz başlamadı…",
+                )
                 try:
-                    result = await self._extract_remote_zip(
-                        resolved,
-                        destination,
-                        progress=progress,
-                        notice=notice,
-                        limits=extraction_limits,
+                    metadata = await self._inspect_remote_zip(
+                        resolved, limits=extraction_limits
                     )
-                except RangeDownloadCancelled as exc:
-                    raise DownloadCancelled(str(exc)) from exc
                 except (RangeNotSupported, RangeDownloadError, NotImplementedError) as exc:
                     logger.warning(
-                        "Remote ZIP extraction completed result=fallback error_type=%s detail=%s",
+                        "Remote ZIP metadata inspection result=fallback "
+                        "error_type=%s detail=%s",
                         type(exc).__name__,
                         exc,
                     )
                     await _notice(
                         notice,
-                        "Sunucu doğrudan ZIP açmayı desteklemiyor; normal indirmeye geçiliyor…",
+                        "ZIP on-demand metadata alınamadı; normal indirme seçeneği kullanılacak.",
                     )
-                else:
-                    await _notice(notice, f"İndirme sırasında arşiv açıldı: {result.destination}")
-                    return result
-            await _notice(notice, f"İndirme başladı: {resolved.filename}")
+            return PreparedBrowserDownload(resolved=resolved, zip_metadata=metadata)
+        except TimeoutError as exc:
+            raise BrowserDirectError("Tarayıcı işlemi zaman aşımına uğradı.") from exc
+        finally:
+            self._active_browser_download = None
+            await _close_browser_resources(context, browser, playwright)
+
+    async def download_prepared(
+        self,
+        prepared: PreparedBrowserDownload,
+        destination: Path,
+        *,
+        progress: ProgressCallback | None = None,
+        notice: NoticeCallback | None = None,
+        stream_extract_zip: bool = False,
+        extraction_limits: ExtractionLimits | None = None,
+    ) -> Path | RemoteExtractionResult:
+        """Start bulk transfer after the user has accepted prepared metadata."""
+        self._range_control.reset()
+        resolved = prepared.resolved
+        if stream_extract_zip and prepared.zip_metadata is not None:
+            await _notice(notice, "ZIP Range aktarımı ve çıkarma başlıyor…")
+            try:
+                result = await self._extract_remote_zip(
+                    resolved,
+                    destination,
+                    progress=progress,
+                    notice=notice,
+                    limits=extraction_limits,
+                )
+            except RangeDownloadCancelled as exc:
+                raise DownloadCancelled(str(exc)) from exc
+            except (RangeNotSupported, RangeDownloadError, NotImplementedError) as exc:
+                logger.warning(
+                    "Remote ZIP extraction completed result=fallback "
+                    "error_type=%s detail=%s",
+                    type(exc).__name__,
+                    exc,
+                )
+                await _notice(
+                    notice,
+                    "Sunucu doğrudan ZIP açmayı desteklemiyor; normal indirmeye geçiliyor…",
+                )
+            else:
+                await _notice(notice, f"İndirme sırasında arşiv açıldı: {result.destination}")
+                return result
+        await _notice(notice, f"İndirme başladı: {resolved.filename}")
+        try:
             result = await self.manager.download(
                 resolved,
                 destination,
@@ -267,11 +345,37 @@ class BrowserDirectDownloader:
             )
             await _notice(notice, f"İndirme tamamlandı: {result}")
             return result
-        except TimeoutError as exc:
-            raise BrowserDirectError("Tarayıcı işlemi zaman aşımına uğradı.") from exc
         finally:
             self._active_browser_download = None
-            await _close_browser_resources(context, browser, playwright)
+
+    async def _inspect_remote_zip(
+        self,
+        resolved: ResolvedDownload,
+        *,
+        limits: ExtractionLimits | None,
+    ) -> ZipStreamMetadata:
+        host = self.manager._validate_download_url(str(resolved.url))
+        if getattr(self.manager, "resolve_hosts", True):
+            await ensure_public_host(host)
+        with HttpRangeFile(
+            str(resolved.url),
+            referer=str(resolved.referer) if resolved.referer else None,
+            require_attachment=resolved.require_attachment,
+            control=self._range_control,
+            prefetch=False,
+        ) as remote:
+            metadata = ArchiveExtractor(limits).inspect_zip_stream(
+                remote,
+                archive_size=remote.size,
+                validate_limits=False,
+            )
+        logger.info(
+            "Remote ZIP metadata prepared archive_size=%d extracted_size=%d files=%d",
+            metadata.archive_size,
+            metadata.extracted_size,
+            metadata.file_count,
+        )
+        return metadata
 
     async def _extract_remote_zip(
         self,
@@ -286,11 +390,50 @@ class BrowserDirectDownloader:
         if getattr(self.manager, "resolve_hosts", True):
             await ensure_public_host(host)
         destination = _available_destination(destination_folder, resolved.filename)
+        resume_workspace = destination.parent / f".{destination.name}.ondemand.part"
         tracker = ProgressTracker()
 
         def report_download(downloaded: int, total: int) -> None:
             if progress:
                 progress(tracker.update(downloaded, total))
+
+        def report_resume(archive_offset: int, completed_members: int) -> None:
+            nonlocal tracker
+            remote.set_progress_floor(archive_offset, notify=False)
+            tracker = ProgressTracker(initial_bytes=remote.downloaded)
+            if progress:
+                progress(tracker.update(remote.downloaded, remote.size))
+            message = (
+                f"{completed_members} tamamlanmış dosya checkpoint'ten atlandı; "
+                f"mantıksal indirme ilerlemesi {_format_resume_bytes(remote.downloaded)}."
+            )
+            logger.info(message)
+            if notice:
+                notice_result = notice(message)
+                if isinstance(notice_result, Awaitable):
+                    asyncio.get_running_loop().create_task(notice_result)
+
+        def report_storage(estimate: StorageEstimate) -> None:
+            if estimate.enough:
+                message = (
+                    "ZIP metadata doğrulandı: açılmış boyut "
+                    f"{_format_resume_bytes(estimate.extracted_size)}, tahmini peak "
+                    f"{_format_resume_bytes(estimate.peak_size)}, boş alan "
+                    f"{_format_resume_bytes(estimate.free_space)}. "
+                    "İndirme ve çıkarma başlıyor…"
+                )
+            else:
+                message = (
+                    "ZIP metadata doğrulandı ancak alan yetersiz: açılmış boyut "
+                    f"{_format_resume_bytes(estimate.extracted_size)}, tahmini peak "
+                    f"{_format_resume_bytes(estimate.peak_size)}, boş alan "
+                    f"{_format_resume_bytes(estimate.free_space)}."
+                )
+            logger.info(message)
+            if notice:
+                notice_result = notice(message)
+                if isinstance(notice_result, Awaitable):
+                    asyncio.get_running_loop().create_task(notice_result)
 
         await _notice(notice, "ZIP dizini uzaktan okunuyor…")
         with HttpRangeFile(
@@ -299,18 +442,36 @@ class BrowserDirectDownloader:
             require_attachment=resolved.require_attachment,
             control=self._range_control,
             progress=report_download,
+            disk_cache=resume_workspace / "ranges",
         ) as remote:
+            tracker = ProgressTracker(initial_bytes=remote.downloaded)
+            if progress and remote.downloaded:
+                progress(tracker.update(remote.downloaded, remote.size))
+                await _notice(
+                    notice,
+                    f"{_format_resume_bytes(remote.downloaded)} Range cache diskte bulundu; "
+                    "tamamlanmış dosya checkpoint'leri taranıyor…",
+                )
             logger.info(
-                "Remote ZIP extraction started archive_size=%d block_size=%d prefetch=%s",
+                "Remote ZIP extraction started archive_size=%d range_cache_size=%d "
+                "block_size=%d prefetch=%s",
                 remote.size,
+                remote.downloaded,
                 remote.block_size,
                 remote.prefetch,
             )
-            await _notice(notice, "ZIP inerken hedef klasöre açılıyor…")
+            await _notice(
+                notice,
+                "ZIP Central Directory okunuyor; dosya aktarımı henüz başlamadı…",
+            )
             extraction = ArchiveExtractor(limits).extract_zip_stream(
                 remote,
                 destination,
                 archive_size=remote.size,
+                resume_workspace=resume_workspace,
+                resume_progress=report_resume,
+                working_storage_size=remote.disk_cache_max_bytes,
+                storage_progress=report_storage,
             )
             if progress:
                 progress(tracker.update(remote.size, remote.size))
@@ -322,13 +483,15 @@ class BrowserDirectDownloader:
                 extraction.total_size,
                 extraction.file_count,
             )
-            return RemoteExtractionResult(
+            result = RemoteExtractionResult(
                 destination=extraction.destination,
                 file_count=extraction.file_count,
                 total_size=extraction.total_size,
                 archive_size=remote.size,
                 downloaded_size=remote.downloaded,
             )
+        shutil.rmtree(resume_workspace, ignore_errors=True)
+        return result
 
     async def _request_download_url(
         self,
@@ -550,14 +713,21 @@ class BrowserDirectDownloader:
                 return button, download_id
         raise BrowserDirectError("İndirme penceresinde görünür Download kaydı bulunamadı.")
 
-
-
 async def _notice(callback: NoticeCallback | None, message: str) -> None:
     logger.info(message)
     if callback:
         result = callback(message)
         if isinstance(result, Awaitable):
             await result
+
+
+def _format_resume_bytes(value: int) -> str:
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024 or unit == "TiB":
+            return f"{amount:.2f} {unit}" if unit != "B" else f"{int(amount)} B"
+        amount /= 1024
+    raise AssertionError("unreachable")
 
 
 async def _close_browser_resources(
